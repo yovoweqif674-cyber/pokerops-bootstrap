@@ -378,6 +378,12 @@ if grep -Fq 'for secret_key in "${REQUIRED_RUNTIME_KEYS[@]}"' "$repository_root/
 else
   fail_test complete-runtime-log-secret-scan
 fi
+if grep -Fq "'/internal/queue-recovery/probe'" "$repository_root/tournament-ingestion.sh" \
+  && grep -Fq "queue_result='lease-recovered'" "$repository_root/tournament-ingestion.sh"; then
+  pass active-queue-lease-recovery-probe
+else
+  fail_test active-queue-lease-recovery-probe
+fi
 
 printf 'bootstrap tests: passed=%s failed=%s\n' "$pass_count" "$fail_count"
 ((fail_count == 0))

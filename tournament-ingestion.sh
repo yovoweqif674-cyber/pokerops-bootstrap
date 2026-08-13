@@ -768,9 +768,17 @@ post_deploy_checks() {
   [[ "$(jq -r '.data.workers.scheduler.leader // false' <<<"$status_json")" == true ]] || fail 'scheduler leadership did not recover after restart'
   [[ "$scheduler_updated_epoch" -ge "$restart_started_epoch" ]] || fail 'scheduler status was not refreshed after restart'
   [[ "$queue_updated_epoch" -ge "$restart_started_epoch" ]] || fail 'queue worker did not scan for recoverable leases after restart'
+  local queue_probe
+  queue_probe=$(authenticated_post "$api_port" '/internal/queue-recovery/probe' "$runtime_env") \
+    || fail 'queue lease recovery probe failed after restart'
+  [[ "$(jq -r '.data.recovered // false' <<<"$queue_probe")" == true \
+    && "$(jq -r '.data.finalStatus // empty' <<<"$queue_probe")" == cancelled ]] \
+    || fail 'queue lease recovery probe did not complete and cancel safely'
+  status_json=$(curl --fail --silent --show-error "http://127.0.0.1:$api_port/api/ingestion/status") \
+    || fail 'ingestion status failed after queue lease recovery probe'
   [[ "$(jq -r '.data.jobs.expiredLeases // -1' <<<"$status_json")" == 0 ]] || fail 'expired queue leases remain after restart'
   scheduler_result='leader'
-  queue_result='recovered'
+  queue_result='lease-recovered'
 
   local logs_file="$temporary_root/worker.log"
   (cd "$service_dir" && docker compose logs --no-color --since=30m worker >"$logs_file")
