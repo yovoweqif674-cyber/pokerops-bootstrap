@@ -677,8 +677,16 @@ post_deploy_checks() {
   api_port=${api_port:-8787}
   [[ "$api_port" =~ ^[0-9]{1,5}$ && "$api_port" -ge 1 && "$api_port" -le 65535 ]] || fail 'configured API port is invalid'
   wait_for_service "$api_port"
-  health='ok'
-  readiness='ready'
+  local health_json
+  local readiness_json
+  local status_before_collect
+  health_json=$(curl --fail --silent --show-error "http://127.0.0.1:$api_port/health") || fail 'GET /health failed'
+  readiness_json=$(curl --fail --silent --show-error "http://127.0.0.1:$api_port/ready") || fail 'GET /ready failed'
+  status_before_collect=$(curl --fail --silent --show-error "http://127.0.0.1:$api_port/api/ingestion/status") \
+    || fail 'GET /api/ingestion/status failed before live collection'
+  health=$(jq -er '.status | select(. == "ok")' <<<"$health_json") || fail 'health payload is invalid'
+  readiness=$(jq -er '.status | select(. == "ready")' <<<"$readiness_json") || fail 'readiness payload is invalid'
+  jq -e '.data.catalog | objects' <<<"$status_before_collect" >/dev/null || fail 'ingestion status payload is invalid before live collection'
   [[ "$(cd "$service_dir" && docker compose config --services)" == worker ]] || fail 'Compose must contain exactly one worker service'
 
   local migration_path="$install_root/releases/$release_sha/supabase/migrations/20260812120127_create_tournament_ingestion.sql"
@@ -694,6 +702,23 @@ post_deploy_checks() {
   local second_collect
   first_collect=$(authenticated_post "$api_port" '/internal/live-smoke' "$runtime_env") || fail 'first live catalog collect failed'
   [[ "$(jq -er '.data.scheduledCount' <<<"$first_collect")" =~ ^[0-9]+$ ]] || fail 'first live collect response is invalid'
+  [[ "$(jq -er '.data.sngCount' <<<"$first_collect")" =~ ^[0-9]+$ ]] || fail 'first live SNG count is invalid'
+  [[ "$(jq -er '.data.uniqueTournamentCount' <<<"$first_collect")" =~ ^[0-9]+$ ]] || fail 'first live unique count is invalid'
+  local status_after_first
+  status_after_first=$(curl --fail --silent --show-error "http://127.0.0.1:$api_port/api/ingestion/status") \
+    || fail 'unable to verify Supabase counts after the first live collect'
+  local first_database_scheduled
+  local first_database_sng
+  local first_database_unique
+  local first_database_duplicates
+  first_database_scheduled=$(jq -er '.data.catalog.scheduled' <<<"$status_after_first")
+  first_database_sng=$(jq -er '.data.catalog.sng' <<<"$status_after_first")
+  first_database_unique=$(jq -er '.data.catalog.uniqueTournaments' <<<"$status_after_first")
+  first_database_duplicates=$(jq -er '.data.catalog.canonicalDuplicates' <<<"$status_after_first")
+  [[ "$first_database_scheduled" =~ ^[0-9]+$ && "$first_database_sng" =~ ^[0-9]+$ && "$first_database_unique" =~ ^[0-9]+$ ]] \
+    || fail 'Supabase catalog counts are invalid after the first live collect'
+  [[ "$first_database_unique" -gt 0 && "$first_database_duplicates" == 0 ]] \
+    || fail 'first live collect did not produce a non-empty duplicate-free Supabase catalog'
   second_collect=$(authenticated_post "$api_port" '/internal/live-smoke' "$runtime_env") || fail 'second live catalog collect failed'
   info_id=$(jq -er '.data.infoId' <<<"$second_collect") || fail 'live /info target is missing'
   state_id=$(jq -er '.data.stateId' <<<"$second_collect") || fail 'live /state target is missing'

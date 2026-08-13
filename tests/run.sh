@@ -366,6 +366,13 @@ if grep -Fq 'https://download.docker.com/linux/$docker_id/gpg' "$repository_root
 else
   fail_test official-docker-bootstrap
 fi
+if grep -Fq "GET /api/ingestion/status failed before live collection" "$repository_root/tournament-ingestion.sh" \
+  && grep -Fq "unable to verify Supabase counts after the first live collect" "$repository_root/tournament-ingestion.sh" \
+  && grep -Fq "first live collect did not produce a non-empty duplicate-free Supabase catalog" "$repository_root/tournament-ingestion.sh"; then
+  pass independent-live-collect-gates
+else
+  fail_test independent-live-collect-gates
+fi
 
 printf 'bootstrap tests: passed=%s failed=%s\n' "$pass_count" "$fail_count"
 ((fail_count == 0))
