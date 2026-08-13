@@ -811,6 +811,10 @@ write_bootstrap_report() {
   local history_dir="$install_root/deployment-history"
   install -d -o root -g root -m 0750 "$history_dir" 2>/dev/null || return 0
   report_path="$history_dir/$(date -u +%Y%m%dT%H%M%SZ)-$release_sha-bootstrap-$status.json"
+  local rollback_command='no previous compatible release is installed'
+  if [[ -n "$previous_current" ]]; then
+    rollback_command="sudo $install_root/current/services/tournament-ingestion/scripts/vps-rollback.sh $(basename -- "$previous_current")"
+  fi
   jq -n \
     --arg service "$BOOTSTRAP_SERVICE" \
     --arg status "$status" \
@@ -823,8 +827,23 @@ write_bootstrap_report() {
     --arg previousRuntimeEnvSha256 "${previous_runtime_env_sha:-not-refreshed}" \
     --arg previousMigrationEnvSha256 "${previous_migration_env_sha:-not-refreshed}" \
     --arg current "$(canonical_path "$install_root/current")" \
+    --arg dockerImageId "${docker_image_id:-unavailable}" \
+    --arg health "${health:-unavailable}" \
+    --arg readiness "${readiness:-unavailable}" \
+    --arg scheduledCount "${scheduled_count:-unavailable}" \
+    --arg sngCount "${sng_count:-unavailable}" \
+    --arg uniqueCount "${unique_count:-unavailable}" \
+    --arg duplicateCount "${duplicate_count:-unavailable}" \
+    --arg infoId "${info_id:-unavailable}" \
+    --arg stateId "${state_id:-unavailable}" \
+    --arg stateStatus "${state_status:-unavailable}" \
+    --arg restartResult "${restart_result:-unavailable}" \
+    --arg schedulerResult "${scheduler_result:-unavailable}" \
+    --arg queueResult "${queue_result:-unavailable}" \
+    --arg frontendUnchanged "${frontend_unchanged:-unavailable}" \
+    --arg rollbackCommand "$rollback_command" \
     --arg completedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{service:$service,status:$status,stage:$stage,message:$message,commitSha:$commitSha,releaseTag:$releaseTag,projectRef:$projectRef,previousCurrent:$previousCurrent,previousRuntimeEnvSha256:$previousRuntimeEnvSha256,previousMigrationEnvSha256:$previousMigrationEnvSha256,current:$current,completedAt:$completedAt}' \
+    '{service:$service,status:$status,stage:$stage,message:$message,commitSha:$commitSha,releaseTag:$releaseTag,projectRef:$projectRef,previousCurrent:$previousCurrent,previousRuntimeEnvSha256:$previousRuntimeEnvSha256,previousMigrationEnvSha256:$previousMigrationEnvSha256,current:$current,dockerImageId:$dockerImageId,health:$health,readiness:$readiness,scheduledCount:$scheduledCount,sngCount:$sngCount,uniqueCount:$uniqueCount,duplicateCount:$duplicateCount,infoId:$infoId,stateId:$stateId,stateStatus:$stateStatus,restartResult:$restartResult,schedulerResult:$schedulerResult,queueResult:$queueResult,frontendUnchanged:$frontendUnchanged,rollbackCommand:$rollbackCommand,completedAt:$completedAt}' \
     >"$report_path" 2>/dev/null || return 0
   chown root:root "$report_path" 2>/dev/null || true
   chmod 0600 "$report_path" 2>/dev/null || true

@@ -397,6 +397,13 @@ if [[ -n "$activation_line" && -n "$deploy_line" && "$activation_line" -lt "$dep
 else
   fail_test outer-rollback-armed-before-helper
 fi
+if grep -Fq 'dockerImageId:$dockerImageId' "$repository_root/tournament-ingestion.sh" \
+  && grep -Fq 'queueResult:$queueResult' "$repository_root/tournament-ingestion.sh" \
+  && grep -Fq 'frontendUnchanged:$frontendUnchanged' "$repository_root/tournament-ingestion.sh"; then
+  pass complete-safe-deployment-report
+else
+  fail_test complete-safe-deployment-report
+fi
 
 printf 'bootstrap tests: passed=%s failed=%s\n' "$pass_count" "$fail_count"
 ((fail_count == 0))
