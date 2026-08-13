@@ -384,6 +384,19 @@ if grep -Fq "'/internal/queue-recovery/probe'" "$repository_root/tournament-inge
 else
   fail_test active-queue-lease-recovery-probe
 fi
+if grep -Fq "GET /health failed after restart" "$repository_root/tournament-ingestion.sh" \
+  && grep -Fq "GET /ready failed after restart" "$repository_root/tournament-ingestion.sh"; then
+  pass post-restart-json-health-gates
+else
+  fail_test post-restart-json-health-gates
+fi
+activation_line=$(grep -n 'deployment_activated=true' "$repository_root/tournament-ingestion.sh" | tail -n 1 | cut -d: -f1)
+deploy_line=$(grep -n 'pokerops-tournament-deploy "$release_sha"' "$repository_root/tournament-ingestion.sh" | tail -n 1 | cut -d: -f1)
+if [[ -n "$activation_line" && -n "$deploy_line" && "$activation_line" -lt "$deploy_line" ]]; then
+  pass outer-rollback-armed-before-helper
+else
+  fail_test outer-rollback-armed-before-helper
+fi
 
 printf 'bootstrap tests: passed=%s failed=%s\n' "$pass_count" "$fail_count"
 ((fail_count == 0))

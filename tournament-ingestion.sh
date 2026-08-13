@@ -748,6 +748,10 @@ post_deploy_checks() {
   restart_started_epoch=$(date -u +%s)
   (cd "$service_dir" && docker compose restart worker >/dev/null) || fail 'controlled worker restart failed'
   wait_for_service "$api_port"
+  health_json=$(curl --fail --silent --show-error "http://127.0.0.1:$api_port/health") || fail 'GET /health failed after restart'
+  readiness_json=$(curl --fail --silent --show-error "http://127.0.0.1:$api_port/ready") || fail 'GET /ready failed after restart'
+  [[ "$(jq -er '.status' <<<"$health_json")" == ok ]] || fail 'health payload is invalid after restart'
+  [[ "$(jq -er '.status' <<<"$readiness_json")" == ready ]] || fail 'readiness payload is invalid after restart'
   restart_result='healthy'
 
   local diagnostic_attempts=0
@@ -941,8 +945,8 @@ main() {
     fi
     install_exact_application_helper
     stage='application-deploy'
-    pokerops-tournament-deploy "$release_sha"
     deployment_activated=true
+    pokerops-tournament-deploy "$release_sha"
     post_deploy_checks
   fi
 
