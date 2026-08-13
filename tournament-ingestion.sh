@@ -229,7 +229,7 @@ detect_operating_system() {
 
 install_dependencies() {
   stage='dependencies'
-  local required_packages=(ca-certificates curl git gh jq tar gzip util-linux openssh-client postgresql-client age openssl)
+  local required_packages=(ca-certificates curl git jq tar gzip util-linux openssh-client postgresql-client age openssl coreutils)
   local missing_packages=()
   local package
   for package in "${required_packages[@]}"; do
@@ -241,21 +241,63 @@ install_dependencies() {
     env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing_packages[@]}"
   fi
 
-  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-    log 'installing Docker Engine'
+  if ! command -v gh >/dev/null 2>&1; then
+    log 'installing GitHub CLI from its official signed repository'
+    local gh_key_tmp="$temporary_root/githubcli-archive-keyring.gpg"
+    local gh_source_tmp="$temporary_root/github-cli.list"
+    local architecture
+    architecture=$(dpkg --print-architecture)
+    [[ "$architecture" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail 'unsupported Debian architecture'
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o "$gh_key_tmp"
+    printf '%s  %s\n' '6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b' "$gh_key_tmp" \
+      | sha256sum -c - >/dev/null || fail 'GitHub CLI repository key checksum mismatch'
+    install -d -o root -g root -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d
+    install -o root -g root -m 0644 "$gh_key_tmp" /etc/apt/keyrings/githubcli-archive-keyring.gpg
+    printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' "$architecture" \
+      >"$gh_source_tmp"
+    install -o root -g root -m 0644 "$gh_source_tmp" /etc/apt/sources.list.d/github-cli.list
     apt-get update -qq
-    if apt-cache show docker-compose-v2 >/dev/null 2>&1; then
-      env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io docker-compose-v2
-    else
-      env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io docker-compose-plugin
-    fi
-    systemctl enable --now docker
-  elif ! docker compose version >/dev/null 2>&1; then
+    env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh
+  fi
+
+  if command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then
+    systemctl enable --now docker >/dev/null 2>&1 || true
+  fi
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+    local docker_id=${ID:-}
+    local docker_codename=${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}
+    local architecture
+    architecture=$(dpkg --print-architecture)
+    [[ "$docker_id" == ubuntu || "$docker_id" == debian ]] || fail 'unsupported Docker repository distribution'
+    [[ "$docker_codename" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || fail 'unsupported Docker repository codename'
+    [[ "$architecture" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail 'unsupported Docker repository architecture'
+    local docker_key_tmp="$temporary_root/docker.asc"
+    local docker_source_tmp="$temporary_root/docker.sources"
+    curl -fsSL "https://download.docker.com/linux/$docker_id/gpg" -o "$docker_key_tmp"
+    [[ -s "$docker_key_tmp" ]] || fail 'Docker repository key download is empty'
+    install -d -o root -g root -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d
+    install -o root -g root -m 0644 "$docker_key_tmp" /etc/apt/keyrings/docker.asc
+    printf 'Types: deb\nURIs: https://download.docker.com/linux/%s\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
+      "$docker_id" "$docker_codename" "$architecture" >"$docker_source_tmp"
+    install -o root -g root -m 0644 "$docker_source_tmp" /etc/apt/sources.list.d/docker.sources
     apt-get update -qq
-    if apt-cache show docker-compose-v2 >/dev/null 2>&1; then
-      env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-v2
-    else
+
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+      log 'installing the missing Docker Compose plugin'
       env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-plugin
+    else
+      log 'installing Docker Engine from the official Docker repository'
+      local conflicting_packages=()
+      local conflict
+      for conflict in docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc; do
+        dpkg-query -W -f='${Status}' "$conflict" 2>/dev/null | grep -q 'install ok installed' && conflicting_packages+=("$conflict")
+      done
+      if ((${#conflicting_packages[@]})); then
+        env DEBIAN_FRONTEND=noninteractive apt-get remove -y "${conflicting_packages[@]}"
+      fi
+      env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      systemctl enable --now docker
     fi
   fi
 
@@ -560,6 +602,7 @@ install_config_atomically() {
   validate_env_pair "$shared_dir/.env.tournament.local.new" "$shared_dir/.env.migration.new"
   sync -f "$shared_dir/.env.tournament.local.new" 2>/dev/null || sync
   sync -f "$shared_dir/.env.migration.new" 2>/dev/null || sync
+  config_installed=true
   mv -fT -- "$shared_dir/.env.tournament.local.new" "$shared_dir/.env.tournament.local"
   mv -fT -- "$shared_dir/.env.migration.new" "$shared_dir/.env.migration"
   sync -f "$shared_dir" 2>/dev/null || sync
@@ -574,7 +617,6 @@ install_config_atomically() {
     [[ "$(stat -c '%U:%G:%a' "$shared_dir/.env.tournament.local")" == root:root:600 ]] || fail 'runtime env owner or mode is invalid'
     [[ "$(stat -c '%U:%G:%a' "$shared_dir/.env.migration")" == root:root:600 ]] || fail 'migration env owner or mode is invalid'
   fi
-  config_installed=true
 }
 
 install_exact_application_helper() {
@@ -674,6 +716,9 @@ post_deploy_checks() {
   [[ "$(jq -r 'to_entries | length' <<<"$port_bindings")" == 1 ]] || fail 'worker exposes an unexpected port set'
   [[ "$(jq -r 'to_entries[0].value | length' <<<"$port_bindings")" == 1 ]] || fail 'worker has an unexpected number of port bindings'
   [[ "$(jq -r 'to_entries[0].value[0].HostIp' <<<"$port_bindings")" == 127.0.0.1 ]] || fail 'worker port is not bound only to 127.0.0.1'
+  if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$worker_id" | grep -q '^MIGRATION_DATABASE_URL='; then
+    fail 'administrative migration URL leaked into the worker container'
+  fi
 
   restart_started_epoch=$(date -u +%s)
   (cd "$service_dir" && docker compose restart worker >/dev/null) || fail 'controlled worker restart failed'

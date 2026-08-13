@@ -355,6 +355,17 @@ if grep -Eqi '(postgres(ql)?://[^[:space:]]+:[^[:space:]@]+@|BEGIN (RSA|OPENSSH|
 else
   pass secret-scan
 fi
+if grep -Eq 'curl[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh' "$repository_root/tournament-ingestion.sh"; then
+  fail_test no-unverified-curl-pipe
+else
+  pass no-unverified-curl-pipe
+fi
+if grep -Fq 'https://download.docker.com/linux/$docker_id/gpg' "$repository_root/tournament-ingestion.sh" \
+  && grep -Fq 'docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin' "$repository_root/tournament-ingestion.sh"; then
+  pass official-docker-bootstrap
+else
+  fail_test official-docker-bootstrap
+fi
 
 printf 'bootstrap tests: passed=%s failed=%s\n' "$pass_count" "$fail_count"
 ((fail_count == 0))
