@@ -777,7 +777,8 @@ post_deploy_checks() {
   chmod 600 "$logs_file"
   local secret_key
   local secret_value
-  for secret_key in DATABASE_URL IGNITION_USERNAME IGNITION_PASSWORD IGNITION_PROXY_PASSWORD CAPSOLVER_CLIENT_KEY INTERNAL_API_TOKEN; do
+  for secret_key in "${REQUIRED_RUNTIME_KEYS[@]}"; do
+    [[ "$secret_key" == IGNITION_PROXY_PORT ]] && continue
     secret_value=$(safe_env_value "$secret_key" "$runtime_env")
     if [[ ${#secret_value} -ge 4 ]] && grep -Fq -- "$secret_value" "$logs_file"; then
       fail 'worker logs contain protected environment material'

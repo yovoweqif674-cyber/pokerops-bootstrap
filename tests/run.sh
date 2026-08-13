@@ -373,6 +373,11 @@ if grep -Fq "GET /api/ingestion/status failed before live collection" "$reposito
 else
   fail_test independent-live-collect-gates
 fi
+if grep -Fq 'for secret_key in "${REQUIRED_RUNTIME_KEYS[@]}"' "$repository_root/tournament-ingestion.sh"; then
+  pass complete-runtime-log-secret-scan
+else
+  fail_test complete-runtime-log-secret-scan
+fi
 
 printf 'bootstrap tests: passed=%s failed=%s\n' "$pass_count" "$fail_count"
 ((fail_count == 0))
