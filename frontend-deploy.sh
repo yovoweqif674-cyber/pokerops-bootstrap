@@ -30,6 +30,8 @@ work_dir=''
 site_path=''
 nginx_backup=''
 frontend_backup=''
+nginx_before_sha=''
+frontend_index_before_sha=''
 frontend_changed=false
 nginx_changed=false
 deployment_succeeded=false
@@ -45,15 +47,21 @@ fail() {
 }
 
 reload_nginx() {
-  if command -v systemctl >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1; then
-    return
-  fi
-  if nginx -s reload >/dev/null 2>&1; then
-    return
-  fi
-  if [[ -r /run/nginx.pid ]] && kill -HUP "$(cat /run/nginx.pid)" >/dev/null 2>&1; then
-    return
-  fi
+  local attempt
+  for attempt in $(seq 1 10); do
+    if command -v systemctl >/dev/null 2>&1 \
+      && systemctl reload nginx >/dev/null 2>&1; then
+      return
+    fi
+    if nginx -s reload >/dev/null 2>&1; then
+      return
+    fi
+    if [[ -r /run/nginx.pid ]] \
+      && kill -HUP "$(cat /run/nginx.pid)" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
   return 1
 }
 
@@ -67,12 +75,16 @@ restore_frontend() {
   chown -R "$WEB_OWNER" "$WEB_ROOT"
   find "$WEB_ROOT" -type d -exec chmod 755 {} +
   find "$WEB_ROOT" -type f -exec chmod 644 {} +
+  [[ -z "$frontend_index_before_sha" \
+    || "$(sha256sum "$WEB_ROOT/index.html" | awk '{print $1}')" == "$frontend_index_before_sha" ]]
 }
 
 restore_nginx() {
   [[ "$nginx_changed" == true ]] || return 0
   [[ -n "$site_path" && -n "$nginx_backup" && -f "$nginx_backup" ]] || return 1
   install -o root -g root -m 644 "$nginx_backup" "$site_path"
+  [[ -z "$nginx_before_sha" \
+    || "$(sha256sum "$site_path" | awk '{print $1}')" == "$nginx_before_sha" ]]
 }
 
 on_error() {
@@ -283,8 +295,23 @@ verify_worker_preflight() {
 }
 
 find_nginx_site() {
-  local candidate
-  for candidate in /etc/nginx/sites-available/pokerops /etc/nginx/sites-enabled/pokerops; do
+  local effective_path="$work_dir/nginx-effective-preflight.conf"
+  local active_files_path="$work_dir/nginx-active-files.txt"
+  nginx -T >"$effective_path" 2>&1
+  sed -nE 's/^# configuration file (.*):$/\1/p' "$effective_path" >"$active_files_path"
+
+  local candidate canonical
+  while IFS= read -r candidate; do
+    [[ -f "$candidate" ]] || continue
+    canonical="$(readlink -f "$candidate")"
+    [[ -n "$canonical" && "$canonical" == /etc/nginx/* && -f "$canonical" ]] || continue
+    if grep -Eq 'server_name[^;]*\bforprofit\.pro\b|root[[:space:]]+/var/www/pokerops' "$candidate"; then
+      printf '%s\n' "$canonical"
+      return 0
+    fi
+  done <"$active_files_path"
+
+  for candidate in /etc/nginx/sites-enabled/pokerops /etc/nginx/conf.d/pokerops.conf /etc/nginx/sites-available/pokerops; do
     if [[ -f "$candidate" ]]; then
       readlink -f "$candidate"
       return 0
@@ -293,7 +320,7 @@ find_nginx_site() {
 
   local found
   found="$(grep -RslE 'server_name .*forprofit\.pro|root[[:space:]]+/var/www/pokerops' \
-    /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null \
+    /etc/nginx/sites-enabled /etc/nginx/conf.d /etc/nginx/sites-available 2>/dev/null \
     | head -n 1 || true)"
   [[ -n "$found" ]] || fail 'PokerOps Nginx site was not found'
   readlink -f "$found"
@@ -307,6 +334,7 @@ prepare_nginx_patch() {
   nginx_backup="$NGINX_BACKUP_ROOT/pokerops-nginx-$timestamp.conf"
   cp -a "$site_path" "$nginx_backup"
   chmod 600 "$nginx_backup"
+  nginx_before_sha="$(sha256sum "$site_path" | awk '{print $1}')"
   cp "$site_path" "$work_dir/nginx-site-original.conf"
 
   if ! NGINX_SOURCE_VALUE="$work_dir/nginx-site-original.conf" \
@@ -442,6 +470,7 @@ create_frontend_backup() {
 
   install -d -o root -g root -m 750 "$BACKUP_ROOT"
   frontend_backup="$BACKUP_ROOT/pokerops-before-tournament-ui-$timestamp.tar.gz"
+  frontend_index_before_sha="$(sha256sum "$WEB_ROOT/index.html" | awk '{print $1}')"
   tar -czf "$frontend_backup" -C "$WEB_ROOT" .
   chmod 600 "$frontend_backup"
   tar -tzf "$frontend_backup" >/dev/null
@@ -462,8 +491,113 @@ deploy_frontend_and_nginx() {
   nginx -t
   reload_nginx
   nginx -T >"$work_dir/nginx-effective.conf" 2>&1
-  grep -Fq 'location ^~ /tournament-ingestion-api/' "$work_dir/nginx-effective.conf" \
-    || fail 'managed Nginx proxy is not active'
+  if ! EFFECTIVE_NGINX_VALUE="$work_dir/nginx-effective.conf" SITE_HOST_VALUE="$SITE_HOST" \
+    python3 <<'PY'
+import os
+import re
+
+path = os.environ['EFFECTIVE_NGINX_VALUE']
+site_host = os.environ['SITE_HOST_VALUE']
+with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+    text = handle.read()
+
+def matching_brace(value: str, opening: int) -> int:
+    depth = 0
+    quote = None
+    escaped = False
+    for index in range(opening, len(value)):
+        char = value[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ('"', "'"):
+            quote = char
+        elif char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+tls_targets = []
+position = 0
+while True:
+    match = re.search(r'\bserver\s*\{', text[position:])
+    if not match:
+        break
+    start = position + match.start()
+    opening = text.find('{', start)
+    end = matching_brace(text, opening)
+    if end < 0:
+        raise SystemExit('effective Nginx server block is malformed')
+    block = text[start:end + 1]
+    has_host = re.search(
+        rf'^\s*server_name\s+[^;]*\b{re.escape(site_host)}\b[^;]*;', block, re.M
+    ) is not None
+    has_tls = re.search(r'^\s*listen\s+[^;]*\b443\b[^;]*;', block, re.M) is not None
+    if has_host and has_tls:
+        tls_targets.append(block)
+    position = end + 1
+
+if len(tls_targets) != 1:
+    raise SystemExit('expected exactly one active TLS server for production host')
+
+target = tls_targets[0]
+required_patterns = (
+    r'^\s*location\s+\^~\s+/tournament-ingestion-api/\s*\{',
+    r'^\s*location\s+\^~\s+/tournament-ingestion-api/internal/\s*\{',
+    r'^\s*location\s+\^~\s+/tournament-ingestion-api/metrics/\s*\{',
+    r'^\s*proxy_pass\s+http://127\.0\.0\.1:8787/\s*;',
+)
+if any(len(re.findall(pattern, target, re.M)) != 1 for pattern in required_patterns):
+    raise SystemExit('effective production TLS server has an invalid managed proxy block')
+PY
+  then
+    fail 'managed Nginx proxy is not active in the production TLS server'
+  fi
+}
+
+classify_safe_response() {
+  local response_path=$1
+  if [[ ! -s "$response_path" ]]; then
+    printf 'empty'
+  elif jq -e . "$response_path" >/dev/null 2>&1; then
+    printf 'json-unexpected'
+  elif grep -Eiq '<!doctype|<html|<head|<title|<body' "$response_path"; then
+    printf 'html'
+  else
+    printf 'non-json'
+  fi
+}
+
+wait_for_local_json() {
+  local url=$1
+  local output_path=$2
+  local jq_filter=$3
+  local label=$4
+  local candidate_path="${output_path}.candidate"
+  local attempt
+
+  for attempt in $(seq 1 45); do
+    if curl --noproxy '*' --resolve "${SITE_HOST}:443:127.0.0.1" \
+      -fsS --max-time 10 -o "$candidate_path" "$url" \
+      && jq -e "$jq_filter" "$candidate_path" >/dev/null 2>&1; then
+      mv -f "$candidate_path" "$output_path"
+      return 0
+    fi
+    sleep 1
+  done
+
+  local response_kind
+  response_kind="$(classify_safe_response "$candidate_path")"
+  rm -f -- "$candidate_path"
+  fail "local Nginx ${label} did not become ready (response=${response_kind})"
 }
 
 verify_public_frontend() {
@@ -475,28 +609,22 @@ verify_public_frontend() {
 
   local resolve_target="${SITE_HOST}:443:127.0.0.1"
 
+  wait_for_local_json "${SITE_URL}${API_PREFIX}/health" "$health_path" \
+    '.status == "ok"' 'health'
+  wait_for_local_json "${SITE_URL}${API_PREFIX}/ready" "$ready_path" \
+    '.status == "ready"' 'readiness'
+  wait_for_local_json "${SITE_URL}${API_PREFIX}/api/ingestion/status" "$status_path" \
+    '.data.catalog.canonicalDuplicates == 0 and (.data.catalog.uniqueTournaments // 0) > 0' \
+    'ingestion status'
+  wait_for_local_json "${SITE_URL}${API_PREFIX}/api/tournaments?limit=1&offset=0" "$catalog_path" \
+    '.data | type == "array" and length > 0' 'tournament catalog'
+
   # Verify the exact production Nginx vhost locally. A VPS resolving its own
   # public hostname through an external proxy/CDN can receive an unrelated
   # HTML error even when the local vhost is healthy.
   curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 20 \
     -o "$page_path" "${SITE_URL}${UI_ROUTE}"
   grep -Fq '<title>PokerOps Dashboard</title>' "$page_path" || fail 'production UI route did not return PokerOps shell'
-
-  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 15 \
-    -o "$health_path" "${SITE_URL}${API_PREFIX}/health"
-  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 15 \
-    -o "$ready_path" "${SITE_URL}${API_PREFIX}/ready"
-  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 20 \
-    -o "$status_path" "${SITE_URL}${API_PREFIX}/api/ingestion/status"
-  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 20 \
-    -o "$catalog_path" "${SITE_URL}${API_PREFIX}/api/tournaments?limit=1&offset=0"
-
-  jq -e '.status == "ok"' "$health_path" >/dev/null 2>&1 || fail 'local Nginx health response is invalid'
-  jq -e '.status == "ready"' "$ready_path" >/dev/null 2>&1 || fail 'local Nginx readiness response is invalid'
-  jq -e '.data.catalog.canonicalDuplicates == 0 and (.data.catalog.uniqueTournaments // 0) > 0' \
-    "$status_path" >/dev/null 2>&1 || fail 'local Nginx ingestion status response is invalid'
-  jq -e '.data | type == "array" and length > 0' "$catalog_path" >/dev/null 2>&1 \
-    || fail 'local Nginx tournament catalog response is invalid'
 
   local write_status
   write_status="$(curl --noproxy '*' --resolve "$resolve_target" -sS --max-time 15 -o /dev/null -w '%{http_code}' \
