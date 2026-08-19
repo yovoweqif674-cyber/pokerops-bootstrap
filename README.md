@@ -1,5 +1,26 @@
 # PokerOps Tournament Ingestion bootstrap
 
+## Tournament catalog frontend
+
+`frontend-deploy.sh` publishes the read-only Tournament Catalog preview at
+`https://forprofit.pro/preview/v4/manager/tournaments`. The helper downloads an
+immutable frontend ZIP from the pinned payload commit, verifies its manifest and
+SHA-256, backs up `/var/www/pokerops` and the active Nginx site, installs a
+same-origin read-only proxy to the worker on `127.0.0.1:8787`, and performs a
+public smoke test. Internal/write endpoints are blocked at Nginx. Any failure
+after activation automatically restores both the frontend and Nginx backup.
+
+Run the helper from a raw URL pinned to the full helper commit supplied in the
+deployment handoff:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yovoweqif674-cyber/pokerops-bootstrap/FULL_HELPER_COMMIT/frontend-deploy.sh | sudo bash
+```
+
+The public ZIP contains only browser assets that are served by the production
+site. It contains no runtime env, database URL, worker token, room credential,
+or migration credential.
+
 ## Runtime-only break-glass deployment
 
 `runtime-only-deploy.sh` deploys one exact application commit using the existing
