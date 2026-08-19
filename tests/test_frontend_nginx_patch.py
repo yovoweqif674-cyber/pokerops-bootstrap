@@ -32,8 +32,7 @@ def main() -> None:
     fixture = '''server {
     listen 443 ssl;
     server_name forprofit.pro www.forprofit.pro;
-    root /var/www/pokerops;
-    index index.html;
+    include /etc/nginx/snippets/pokerops-root.conf;
 
     location /assets/ {
         try_files $uri =404;
@@ -60,6 +59,7 @@ def main() -> None:
         assert 'location ^~ /tournament-ingestion-api/internal/' in first_text
         assert 'location /assets/' in first_text
         assert 'location / {' in first_text
+        assert first_text.index('location ^~ /tournament-ingestion-api/') < first_text.index('location /assets/')
 
         run_patcher(code, first, second)
         second_text = second.read_text(encoding='utf-8')
@@ -71,3 +71,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
