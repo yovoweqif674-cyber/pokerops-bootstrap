@@ -1,5 +1,16 @@
 # PokerOps Tournament Ingestion bootstrap
 
+## One-command production deployment
+
+`deploy.sh` downloads byte-exact runtime and frontend helpers pinned to one
+immutable bootstrap commit, verifies both SHA-256 fingerprints, deploys the
+fixed application Release, and then publishes the matching Tournament Catalog
+frontend. The wrapper accepts no arguments and contains no secrets.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yovoweqif674-cyber/pokerops-bootstrap/deploy-v3/deploy.sh | bash
+```
+
 ## Tournament catalog frontend
 
 `frontend-deploy.sh` publishes the read-only Tournament Catalog preview at
