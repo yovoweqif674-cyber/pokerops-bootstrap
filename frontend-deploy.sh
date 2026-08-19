@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 readonly BOOTSTRAP_REPOSITORY='yovoweqif674-cyber/pokerops-bootstrap'
-readonly PAYLOAD_COMMIT='505bb02a435e205d14d5ad2459dc2e24e1493f13'
+readonly PAYLOAD_COMMIT='8834736917905f1c29bd553e0081dbd44c198ff6'
 readonly SOURCE_REPOSITORY='yovoweqif674-cyber/po'
 readonly SOURCE_COMMIT='da2c830948ef17dd93b77ed6200b6f749c5746b9'
 readonly ARCHIVE_NAME='pokerops-tournament-ui.zip'
@@ -579,4 +579,3 @@ main() {
 if [[ "${POKEROPS_FRONTEND_DEPLOY_LIBRARY_ONLY:-0}" != '1' ]]; then
   main "$@"
 fi
-

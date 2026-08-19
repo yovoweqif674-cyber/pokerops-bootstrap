@@ -108,7 +108,7 @@ with zipfile.ZipFile(source) as input_zip, zipfile.ZipFile(target, 'w') as outpu
 PY
 expect_archive_failure secret-material-rejected "$work_root/secret.zip"
 
-if grep -Fq "PAYLOAD_COMMIT='505bb02a435e205d14d5ad2459dc2e24e1493f13'" "$helper" \
+if grep -Fq "PAYLOAD_COMMIT='8834736917905f1c29bd553e0081dbd44c198ff6'" "$helper" \
   && grep -Fq "ARCHIVE_SHA256='$expected_sha'" "$helper"; then
   pass immutable-payload-pin
 else
@@ -152,4 +152,3 @@ fi
 
 printf 'frontend helper tests: passed=%s failed=%s\n' "$pass_count" "$fail_count"
 ((fail_count == 0))
-
