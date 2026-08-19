@@ -29,11 +29,25 @@ grep -q '"commitSha","configType","encryptedFile"' "$SCRIPT"
 grep -q 'mv -fT.*runtime_env' "$SCRIPT"
 grep -q 'docker compose restart worker' "$SCRIPT"
 grep -q 'mv -Tf.*current' "$SCRIPT"
+grep -q "trap 'on_error \$?' ERR" "$SCRIPT"
+grep -q 'runtime-deploy-failed-' "$SCRIPT"
+grep -q 'write_failure_report.*status' "$SCRIPT"
 
 # Load only function definitions; the executable's final line is intentionally main "$@".
 sed '$d' "$SCRIPT" >"$TEMP/library.sh"
 # shellcheck disable=SC1090
 source "$TEMP/library.sh"
+
+failure_reported=false
+stage="synthetic-post-start-check"
+failure_output="$({
+  report_failure "synthetic failure"
+  report_failure "duplicate failure"
+} 2>&1)"
+[[ "$(grep -c '^DEPLOYMENT FAILED$' <<<"$failure_output")" == "1" ]]
+grep -q '^stage=synthetic-post-start-check$' <<<"$failure_output"
+grep -q '^error=synthetic failure$' <<<"$failure_output"
+! grep -q 'duplicate failure' <<<"$failure_output"
 
 write_env() {
   local path="$1"

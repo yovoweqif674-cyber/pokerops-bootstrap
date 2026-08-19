@@ -16,9 +16,30 @@ old_release=""
 new_worker_started=false
 deployment_succeeded=false
 report_path=""
+failure_reported=false
+requested_release_sha=""
 
 log() { printf '%s\n' "$*" >&2; }
-die() { log "DEPLOYMENT FAILED"; log "stage=$stage"; log "error=$*"; exit 1; }
+
+report_failure() {
+  local message="$1"
+  [[ "$failure_reported" == false ]] || return 0
+  failure_reported=true
+  log "DEPLOYMENT FAILED"
+  log "stage=$stage"
+  log "error=$message"
+}
+
+die() {
+  report_failure "$*"
+  exit 1
+}
+
+on_error() {
+  local status="$1"
+  report_failure "unexpected command failure (exit status $status)"
+  return "$status"
+}
 
 file_fingerprint() {
   sha256sum -- "$1" | awk '{print $1}'
@@ -298,10 +319,26 @@ restore_previous_release() {
   fi
 }
 
+write_failure_report() {
+  local status="$1" timestamp report_tmp
+  [[ -d "$INSTALL_ROOT/deployment-history" ]] || return 0
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  report_path="$INSTALL_ROOT/deployment-history/runtime-deploy-failed-$timestamp.json"
+  report_tmp="$(mktemp "$INSTALL_ROOT/deployment-history/.runtime-deploy-failed.XXXXXX")"
+  printf '{"schemaVersion":"1","service":"%s","status":"failed","stage":"%s","attemptedReleaseSha":"%s","exitStatus":%s,"generatedAt":"%s"}\n' \
+    "$SERVICE" "$stage" "$requested_release_sha" "$status" "$(date -u +%FT%TZ)" >"$report_tmp"
+  chown root:root "$report_tmp"
+  chmod 0600 "$report_tmp"
+  mv -fT "$report_tmp" "$report_path"
+}
+
 cleanup() {
   local status=$?
   trap - EXIT ERR INT TERM
   if [[ $status -ne 0 ]]; then
+    set +e
+    [[ "$failure_reported" == true ]] || report_failure "unexpected deployment failure (exit status $status)"
+    write_failure_report "$status"
     restore_previous_release
     if [[ -n "$report_path" ]]; then
       log "report=$report_path"
@@ -320,8 +357,10 @@ main() {
   local release_sha="$1"
   [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || die "release SHA must contain 40 lowercase hexadecimal characters"
   [[ "$(id -u)" == 0 ]] || die "production deployment must run as root"
+  requested_release_sha="$release_sha"
 
-  trap cleanup EXIT ERR INT TERM
+  trap 'on_error $?' ERR
+  trap cleanup EXIT
   umask 077
   temporary_root="$(TMPDIR=/tmp mktemp -d /tmp/pokerops-runtime-deploy.XXXXXX)"
 
