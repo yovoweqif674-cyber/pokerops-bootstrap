@@ -17,4 +17,49 @@ runtime_line="$(grep -n 'bash "$runtime_helper"' "$SCRIPT" | cut -d: -f1)"
 frontend_line="$(grep -n 'bash "$frontend_helper"' "$SCRIPT" | cut -d: -f1)"
 [[ "$runtime_line" -lt "$frontend_line" ]]
 
+TEMP="$(mktemp -d)"
+trap 'rm -rf "$TEMP"' EXIT
+mkdir "$TEMP/bin"
+export POKEROPS_WRAPPER_TEST_ROOT="$ROOT"
+export POKEROPS_WRAPPER_TEST_LOG="$TEMP/calls.log"
+
+cat >"$TEMP/bin/id" <<'SH'
+#!/usr/bin/bash
+printf '%s\n' 0
+SH
+
+cat >"$TEMP/bin/curl" <<'SH'
+#!/usr/bin/bash
+output=''
+url=''
+while (($#)); do
+  case "$1" in
+    -o) output="$2"; shift 2 ;;
+    http*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  */runtime-only-deploy.sh) cp "$POKEROPS_WRAPPER_TEST_ROOT/runtime-only-deploy.sh" "$output" ;;
+  */frontend-deploy.sh) cp "$POKEROPS_WRAPPER_TEST_ROOT/frontend-deploy.sh" "$output" ;;
+  *) exit 1 ;;
+esac
+SH
+
+cat >"$TEMP/bin/bash" <<'SH'
+#!/usr/bin/bash
+case "$1" in
+  */runtime-only-deploy.sh) printf 'runtime:%s\n' "$2" >>"$POKEROPS_WRAPPER_TEST_LOG" ;;
+  */frontend-deploy.sh) printf '%s\n' frontend >>"$POKEROPS_WRAPPER_TEST_LOG" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod 0700 "$TEMP/bin/id" "$TEMP/bin/curl" "$TEMP/bin/bash"
+
+PATH="$TEMP/bin:$PATH" /usr/bin/bash "$SCRIPT" >/dev/null
+printf '%s\n%s\n' \
+  'runtime:663a4b0b2b6d5e61bd4839a528915eea344853e2' \
+  'frontend' >"$TEMP/expected.log"
+cmp "$TEMP/expected.log" "$TEMP/calls.log"
+
 printf '%s\n' 'full-stack wrapper tests: PASS'
