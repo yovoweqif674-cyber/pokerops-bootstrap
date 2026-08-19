@@ -2,10 +2,10 @@
 set -Eeuo pipefail
 
 readonly BOOTSTRAP_REPOSITORY='yovoweqif674-cyber/pokerops-bootstrap'
-readonly HELPER_COMMIT='8cc596453e649fccbe0f528d934376b3467fd583'
-readonly APPLICATION_COMMIT='663a4b0b2b6d5e61bd4839a528915eea344853e2'
-readonly RUNTIME_HELPER_SHA256='0c0d78db374c4c40fe3ff40fa5d4452145159113ced19c9a5c114ac4c38cd03b'
-readonly FRONTEND_HELPER_SHA256='b345a2418b195459b74e8571691cc2bf8db5a2ca1b1771006a087a07f0a6cc4e'
+readonly HELPER_COMMIT='0869cf9d67e7b5cdd40c1e14be7479ca5d94d4e1'
+readonly APPLICATION_COMMIT='5ac17f1bfd0f635c2eeab9438bc5ac048164247b'
+readonly RUNTIME_HELPER_SHA256='3e728bf693ad01985f9523f2ad54ba8f30fe3d8e223699ffd64bb2953012d601'
+readonly FRONTEND_HELPER_SHA256='fd3f9fbe73790eac48524537bf90e2932b275686d1ab1f13a0a8752532cef3b1'
 
 [[ $# -eq 0 ]] || { printf 'usage: deploy.sh\n' >&2; exit 2; }
 [[ "$(id -u)" == '0' ]] || { printf 'run as root\n' >&2; exit 1; }

@@ -1,0 +1,34 @@
+name: Bootstrap Quality
+
+on:
+  push:
+    branches:
+      - codex/tournament-catalog-hardening-deploy
+  pull_request:
+    paths:
+      - '.github/workflows/bootstrap-quality.yml'
+      - '*.sh'
+      - 'tests/**'
+      - 'pokerops-tournament-ui.zip'
+      - 'pokerops-tournament-ui.manifest.json'
+      - 'SHA256SUMS'
+
+permissions:
+  contents: read
+
+jobs:
+  immutable-runtime-line:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq python3 shellcheck unzip zip
+      - name: Shellcheck
+        run: shellcheck deploy.sh runtime-only-deploy.sh frontend-deploy.sh tests/deploy-run.sh tests/runtime-only-run.sh tests/frontend-deploy-run.sh
+      - name: Runtime-only contracts and failure fixtures
+        run: bash tests/runtime-only-run.sh
+      - name: Frontend manifest and archive safety
+        run: bash tests/frontend-deploy-run.sh
+      - name: Immutable wrapper pins, order and rollback simulations
+        run: bash tests/deploy-run.sh

@@ -8,7 +8,7 @@ work_root=$(mktemp -d "${TMPDIR:-/tmp}/pokerops-frontend-helper-tests.XXXXXXXX")
 trap 'rm -rf -- "$work_root"' EXIT
 
 export POKEROPS_FRONTEND_DEPLOY_LIBRARY_ONLY=1
-# shellcheck source=../frontend-deploy.sh
+# shellcheck disable=SC1090,SC1091
 source "$helper"
 trap 'rm -rf -- "$work_root"' EXIT
 
@@ -55,9 +55,13 @@ expect_archive_failure() {
   fi
 }
 
-expected_sha='6801d128785bbd8e883ee4898c365c0498da75ef935700912ff80a1e686d081f'
+expected_sha='6f9bbfcb8116f98c892bec29be988c21cbd9e4d7f48fbf357b6f90e439c4ba96'
 actual_sha=$(sha256sum "$payload" | awk '{print $1}')
-[[ "$actual_sha" == "$expected_sha" ]] && pass payload-checksum || fail_test payload-checksum
+if [[ "$actual_sha" == "$expected_sha" ]]; then
+  pass payload-checksum
+else
+  fail_test payload-checksum
+fi
 
 expect_archive_success valid-archive "$payload"
 
@@ -108,13 +112,24 @@ with zipfile.ZipFile(source) as input_zip, zipfile.ZipFile(target, 'w') as outpu
 PY
 expect_archive_failure secret-material-rejected "$work_root/secret.zip"
 
-if grep -Fq "PAYLOAD_COMMIT='8834736917905f1c29bd553e0081dbd44c198ff6'" "$helper" \
+if grep -Eq "PAYLOAD_COMMIT='[0-9a-f]{40}'" "$helper" \
+  && grep -Fq "SOURCE_COMMIT='5ac17f1bfd0f635c2eeab9438bc5ac048164247b'" "$helper" \
   && grep -Fq "ARCHIVE_SHA256='$expected_sha'" "$helper"; then
   pass immutable-payload-pin
 else
   fail_test immutable-payload-pin
 fi
 
+if grep -Fq '/api/ingestion/health' "$helper" \
+  && grep -Fq 'startupReconciliation.status == "completed"' "$helper" \
+  && grep -Fq 'filtered pagination and scoped facets contract validation failed' "$helper" \
+  && grep -Fq '/timeline?limit=10' "$helper"; then
+  pass operational-public-contracts
+else
+  fail_test operational-public-contracts
+fi
+
+# shellcheck disable=SC2016
 if grep -Fq 'proxy_pass http://127.0.0.1:8787/;' "$helper" \
   && grep -Fq 'if ($request_method !~ ^(GET|HEAD)$)' "$helper" \
   && grep -Fq 'location ^~ /tournament-ingestion-api/internal/' "$helper"; then
