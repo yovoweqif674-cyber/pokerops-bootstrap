@@ -2,14 +2,15 @@
   "schemaVersion": 1,
   "service": "pokerops-tournament-catalog-ui",
   "sourceRepository": "yovoweqif674-cyber/po",
-  "sourceBranch": "codex/tournament-catalog-ui-v1",
-  "sourceCommit": "2a9e20c4804f7b5196a1e43356cb2503f5773c97",
+  "sourceBranch": "codex/tournament-catalog-current-history",
+  "sourceCommit": "da2c830948ef17dd93b77ed6200b6f749c5746b9",
   "mode": "read-only-preview",
   "route": "/preview/v4/manager/tournaments",
   "apiBase": "/tournament-ingestion-api",
   "archive": "pokerops-tournament-ui.zip",
-  "archiveSha256": "655bdef3b5ab44a34045c01ade637962dd4ae41f52a970c69034e9992db9f7f9",
-  "indexJs": "assets/index-MCSD7vkL.js",
+  "archiveSha256": "6801d128785bbd8e883ee4898c365c0498da75ef935700912ff80a1e686d081f",
+  "indexJs": "assets/index-BGxDxLGR.js",
   "indexCss": "assets/index-B5yM79TK.css",
-  "generatedAt": "2026-08-19T00:00:00Z"
+  "generatedAt": "2026-08-19T13:51:29Z"
 }
+
