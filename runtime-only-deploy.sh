@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 readonly REPOSITORY="yovoweqif674-cyber/po"
+readonly RUNTIME_CONFIG_WORKFLOW="tournament-ingestion-runtime-sealed-config.yml"
 readonly SERVICE="pokerops-tournament-ingestion"
 readonly SUPABASE_REF="xpajqdsppawnjmvewkep"
 readonly INSTALL_ROOT="/opt/pokerops-tournament-ingestion"
@@ -87,7 +88,7 @@ validate_runtime_env() {
 
 install_dependencies() {
   local missing=false package
-  for package in curl git gh jq tar gzip sha256sum find xargs diff; do
+  for package in curl git gh jq tar gzip sha256sum find xargs diff age age-keygen; do
     command -v "$package" >/dev/null 2>&1 || missing=true
   done
   command -v docker >/dev/null 2>&1 || missing=true
@@ -101,7 +102,7 @@ install_dependencies() {
       || die "only Ubuntu and Debian are supported"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq ca-certificates curl git gh jq tar gzip coreutils findutils diffutils util-linux
+    apt-get install -y -qq ca-certificates curl git gh jq tar gzip coreutils findutils diffutils util-linux age
     if ! command -v docker >/dev/null 2>&1; then
       apt-get install -y -qq docker.io
     fi
@@ -126,6 +127,113 @@ ensure_github_auth() {
   log "GitHub authentication is required; complete the browser device flow."
   gh auth login --hostname github.com --git-protocol https --web </dev/tty >/dev/tty
   gh auth status --hostname github.com >/dev/null 2>&1 || die "GitHub authentication failed"
+}
+
+obtain_runtime_env() {
+  local release_sha="$1" runtime_env="$2"
+  local key_dir="$temporary_root/age" identity recipient nonce title runs_json run_id run_url
+  local download_dir="$temporary_root/runtime-artifact"
+  local encrypted_path manifest_path plaintext_tar plaintext_dir decrypted_env
+  mkdir -m 0700 -- "$key_dir" "$download_dir"
+  identity="$key_dir/identity.txt"
+  age-keygen -o "$identity" >/dev/null 2>&1
+  chmod 0600 "$identity"
+  recipient="$(age-keygen -y "$identity")"
+  [[ "$recipient" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]{50,90}$ ]] \
+    || die "ephemeral age recipient is invalid"
+  nonce="runtime-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  title="runtime-config-$nonce"
+
+  gh workflow run "$RUNTIME_CONFIG_WORKFLOW" \
+    --repo "$REPOSITORY" \
+    --ref deployment-control \
+    -f "commit_sha=$release_sha" \
+    -f "age_recipient=$recipient" \
+    -f "nonce=$nonce" >/dev/null
+
+  run_id=""
+  for _ in $(seq 1 60); do
+    runs_json="$(gh run list \
+      --repo "$REPOSITORY" \
+      --workflow "$RUNTIME_CONFIG_WORKFLOW" \
+      --branch deployment-control \
+      --event workflow_dispatch \
+      --limit 100 \
+      --json databaseId,displayTitle,url 2>/dev/null || true)"
+    run_id="$(jq -r --arg title "$title" '[.[] | select(.displayTitle == $title)] | sort_by(.databaseId) | last | .databaseId // empty' <<<"$runs_json" 2>/dev/null || true)"
+    run_url="$(jq -r --arg title "$title" '[.[] | select(.displayTitle == $title)] | sort_by(.databaseId) | last | .url // empty' <<<"$runs_json" 2>/dev/null || true)"
+    [[ "$run_id" =~ ^[0-9]+$ ]] && break
+    sleep 2
+  done
+  [[ "$run_id" =~ ^[0-9]+$ ]] || die "runtime config workflow run was not found by nonce"
+
+  if ! gh run watch "$run_id" --repo "$REPOSITORY" --exit-status; then
+    log "workflow_url=$run_url"
+    die "runtime config workflow failed"
+  fi
+  gh run download "$run_id" \
+    --repo "$REPOSITORY" \
+    --name "runtime-sealed-config-$nonce" \
+    --dir "$download_dir" >/dev/null
+
+  encrypted_path="$download_dir/runtime-config.tar.age"
+  manifest_path="$download_dir/runtime-config.manifest.json"
+  [[ -f "$encrypted_path" && ! -L "$encrypted_path" ]] || die "encrypted runtime artifact is missing"
+  [[ -f "$manifest_path" && ! -L "$manifest_path" ]] || die "runtime artifact manifest is missing"
+  [[ "$(find "$download_dir" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == 2 ]] \
+    || die "runtime artifact must contain exactly two files"
+  [[ -z "$(find "$download_dir" -mindepth 1 -maxdepth 1 ! -type f -print -quit)" ]] \
+    || die "runtime artifact contains a non-regular entry"
+
+  jq -e \
+    --arg commit "$release_sha" \
+    --arg nonce "$nonce" \
+    --arg project "$SUPABASE_REF" \
+    '.schemaVersion == 2 and
+     .configType == "runtime-only" and
+     .service == "pokerops-tournament-ingestion" and
+     .commitSha == $commit and
+     .nonce == $nonce and
+     .encryption == "age-x25519" and
+     .encryptedFile == "runtime-config.tar.age" and
+     .projectRef == $project and
+     (.encryptedSha256 | test("^[0-9a-f]{64}$")) and
+     (.runtimeEnvSha256 | test("^[0-9a-f]{64}$")) and
+     ((keys | sort) == (["commitSha","configType","encryptedFile","encryptedSha256","encryption","generatedAt","nonce","projectRef","runtimeEnvSha256","schemaVersion","service"] | sort))' \
+    "$manifest_path" >/dev/null || die "runtime artifact manifest validation failed"
+  [[ "$(file_fingerprint "$encrypted_path")" == "$(jq -r '.encryptedSha256' "$manifest_path")" ]] \
+    || die "encrypted runtime artifact checksum mismatch"
+
+  plaintext_tar="$temporary_root/runtime-config.tar"
+  plaintext_dir="$temporary_root/runtime-plaintext"
+  mkdir -m 0700 -- "$plaintext_dir"
+  age --decrypt --identity "$identity" --output "$plaintext_tar" "$encrypted_path" \
+    || die "runtime artifact decryption failed"
+  chmod 0600 "$plaintext_tar"
+  mapfile -t tar_entries < <(tar -tf "$plaintext_tar")
+  [[ "${#tar_entries[@]}" -eq 1 && "${tar_entries[0]}" == '.env.tournament.local' ]] \
+    || die "runtime tar filename allowlist mismatch"
+  tar -tvf "$plaintext_tar" | awk 'NR == 1 { exit(substr($1, 1, 1) == "-" ? 0 : 1) }' \
+    || die "runtime tar entry must be a regular file"
+  tar -xf "$plaintext_tar" -C "$plaintext_dir" --no-same-owner --no-same-permissions
+  decrypted_env="$plaintext_dir/.env.tournament.local"
+  [[ -f "$decrypted_env" && ! -L "$decrypted_env" ]] || die "decrypted runtime env is invalid"
+  [[ "$(file_fingerprint "$decrypted_env")" == "$(jq -r '.runtimeEnvSha256' "$manifest_path")" ]] \
+    || die "decrypted runtime env checksum mismatch"
+  validate_runtime_env "$decrypted_env"
+
+  local install_tmp
+  install_tmp="$(mktemp "$INSTALL_ROOT/shared/.env.tournament.local.tmp.XXXXXX")"
+  install -o root -g root -m 0600 "$decrypted_env" "$install_tmp"
+  sync -f "$install_tmp"
+  mv -fT "$install_tmp" "$runtime_env"
+  sync -f "$INSTALL_ROOT/shared"
+  [[ -f "$runtime_env" && ! -L "$runtime_env" ]] || die "atomic runtime env installation failed"
+  [[ "$(stat -c '%U:%G:%a' "$runtime_env")" == root:root:600 ]] \
+    || die "installed runtime env ownership or mode is invalid"
+
+  shred -u -- "$plaintext_tar" "$decrypted_env" "$identity" 2>/dev/null || true
+  rm -rf -- "$download_dir" "$plaintext_dir" "$key_dir"
 }
 
 wait_for_health() {
@@ -227,6 +335,12 @@ main() {
     "$INSTALL_ROOT/releases" \
     "$INSTALL_ROOT/deployment-history"
   local runtime_env="$INSTALL_ROOT/shared/.env.tournament.local"
+  if [[ ! -e "$runtime_env" ]]; then
+    stage="github-authentication"
+    ensure_github_auth
+    stage="runtime-config"
+    obtain_runtime_env "$release_sha" "$runtime_env"
+  fi
   validate_runtime_env "$runtime_env"
   chown root:root "$runtime_env"
   chmod 0600 "$runtime_env"

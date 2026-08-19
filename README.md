@@ -10,6 +10,11 @@ Docker worker, performs two live catalog collections, checks duplicate safety,
 tests restart and queue recovery, preserves `/var/www/pokerops`, and activates
 the release only after all checks pass.
 
+If the shared runtime env is missing, the helper generates a one-time age key,
+dispatches the runtime-only sealed-config workflow from `deployment-control`,
+and atomically installs the verified decrypted file as `root:root` mode `0600`.
+The ephemeral key and downloaded artifact are removed before deployment.
+
 Run it as root with a full 40-character commit SHA. Use a raw URL pinned to the
 exact bootstrap commit supplied with the deployment handoff.
 
