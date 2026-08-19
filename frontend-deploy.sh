@@ -19,6 +19,7 @@ readonly WEB_OWNER='deploy:www-data'
 readonly BACKUP_ROOT='/var/www/pokerops-backups'
 readonly NGINX_BACKUP_ROOT='/var/backups/pokerops-tournament-ui'
 readonly STATE_ROOT='/var/lib/pokerops-frontend-deploy'
+readonly SITE_HOST='forprofit.pro'
 readonly SITE_URL='https://forprofit.pro'
 readonly UI_ROUTE='/preview/v4/manager/tournaments'
 readonly API_PREFIX='/tournament-ingestion-api'
@@ -74,16 +75,18 @@ on_error() {
   set +e
 
   local rollback='not-required'
+  local nginx_restore_status=0
+  local frontend_restore_status=0
+  local nginx_reload_status=0
   if [[ "$frontend_changed" == true || "$nginx_changed" == true ]]; then
     rollback='failed'
-    restore_nginx
-    local nginx_restore_status=$?
-    restore_frontend
-    local frontend_restore_status=$?
+    restore_nginx || nginx_restore_status=$?
+    restore_frontend || frontend_restore_status=$?
     if [[ "$nginx_restore_status" -eq 0 && "$frontend_restore_status" -eq 0 ]]; then
-      nginx -t >/dev/null 2>&1 && reload_nginx
-      if [[ "$?" -eq 0 ]]; then
+      if nginx -t >/dev/null 2>&1 && reload_nginx; then
         rollback='complete'
+      else
+        nginx_reload_status=$?
       fi
     fi
   fi
@@ -92,6 +95,9 @@ on_error() {
     'FRONTEND DEPLOYMENT FAILED' \
     "stage=${stage}" \
     "rollback=${rollback}" \
+    "rollback_nginx_restore_status=${nginx_restore_status}" \
+    "rollback_frontend_restore_status=${frontend_restore_status}" \
+    "rollback_nginx_reload_status=${nginx_reload_status}" \
     'retry=rerun-the-same-pinned-command'
   exit "$status"
 }
@@ -457,26 +463,38 @@ verify_public_frontend() {
   local status_path="$work_dir/public-status.json"
   local catalog_path="$work_dir/public-catalog.json"
 
-  curl -fsS --max-time 20 -o "$page_path" "${SITE_URL}${UI_ROUTE}"
+  local resolve_target="${SITE_HOST}:443:127.0.0.1"
+
+  # Verify the exact production Nginx vhost locally. A VPS resolving its own
+  # public hostname through an external proxy/CDN can receive an unrelated
+  # HTML error even when the local vhost is healthy.
+  curl --resolve "$resolve_target" -fsS --max-time 20 \
+    -o "$page_path" "${SITE_URL}${UI_ROUTE}"
   grep -Fq '<title>PokerOps Dashboard</title>' "$page_path" || fail 'production UI route did not return PokerOps shell'
 
-  curl -fsS --max-time 15 -o "$health_path" "${SITE_URL}${API_PREFIX}/health"
-  curl -fsS --max-time 15 -o "$ready_path" "${SITE_URL}${API_PREFIX}/ready"
-  curl -fsS --max-time 20 -o "$status_path" "${SITE_URL}${API_PREFIX}/api/ingestion/status"
-  curl -fsS --max-time 20 -o "$catalog_path" "${SITE_URL}${API_PREFIX}/api/tournaments?limit=1&offset=0"
+  curl --resolve "$resolve_target" -fsS --max-time 15 \
+    -o "$health_path" "${SITE_URL}${API_PREFIX}/health"
+  curl --resolve "$resolve_target" -fsS --max-time 15 \
+    -o "$ready_path" "${SITE_URL}${API_PREFIX}/ready"
+  curl --resolve "$resolve_target" -fsS --max-time 20 \
+    -o "$status_path" "${SITE_URL}${API_PREFIX}/api/ingestion/status"
+  curl --resolve "$resolve_target" -fsS --max-time 20 \
+    -o "$catalog_path" "${SITE_URL}${API_PREFIX}/api/tournaments?limit=1&offset=0"
 
-  jq -e '.status == "ok"' "$health_path" >/dev/null
-  jq -e '.status == "ready"' "$ready_path" >/dev/null
-  jq -e '.data.catalog.canonicalDuplicates == 0 and (.data.catalog.uniqueTournaments // 0) > 0' "$status_path" >/dev/null
-  jq -e '.data | type == "array" and length > 0' "$catalog_path" >/dev/null
+  jq -e '.status == "ok"' "$health_path" >/dev/null 2>&1 || fail 'local Nginx health response is invalid'
+  jq -e '.status == "ready"' "$ready_path" >/dev/null 2>&1 || fail 'local Nginx readiness response is invalid'
+  jq -e '.data.catalog.canonicalDuplicates == 0 and (.data.catalog.uniqueTournaments // 0) > 0' \
+    "$status_path" >/dev/null 2>&1 || fail 'local Nginx ingestion status response is invalid'
+  jq -e '.data | type == "array" and length > 0' "$catalog_path" >/dev/null 2>&1 \
+    || fail 'local Nginx tournament catalog response is invalid'
 
   local write_status
-  write_status="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+  write_status="$(curl --resolve "$resolve_target" -sS --max-time 15 -o /dev/null -w '%{http_code}' \
     -X POST "${SITE_URL}${API_PREFIX}/internal/catalog/collect" || true)"
   [[ "$write_status" == '404' || "$write_status" == '405' ]] || fail 'public proxy did not block internal write endpoint'
 
   local live_index="$work_dir/live-index.html"
-  curl -fsS --max-time 15 -o "$live_index" "${SITE_URL}/index.html"
+  curl --resolve "$resolve_target" -fsS --max-time 15 -o "$live_index" "${SITE_URL}/index.html"
   grep -Fq "$INDEX_JS" "$live_index" || fail 'public index JS is stale'
   grep -Fq "$INDEX_CSS" "$live_index" || fail 'public index CSS is stale'
 }
@@ -579,3 +597,4 @@ main() {
 if [[ "${POKEROPS_FRONTEND_DEPLOY_LIBRARY_ONLY:-0}" != '1' ]]; then
   main "$@"
 fi
+
