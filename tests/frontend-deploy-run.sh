@@ -55,7 +55,7 @@ expect_archive_failure() {
   fi
 }
 
-expected_sha='655bdef3b5ab44a34045c01ade637962dd4ae41f52a970c69034e9992db9f7f9'
+expected_sha='6801d128785bbd8e883ee4898c365c0498da75ef935700912ff80a1e686d081f'
 actual_sha=$(sha256sum "$payload" | awk '{print $1}')
 [[ "$actual_sha" == "$expected_sha" ]] && pass payload-checksum || fail_test payload-checksum
 
@@ -108,7 +108,7 @@ with zipfile.ZipFile(source) as input_zip, zipfile.ZipFile(target, 'w') as outpu
 PY
 expect_archive_failure secret-material-rejected "$work_root/secret.zip"
 
-if grep -Fq "PAYLOAD_COMMIT='894be971df2b55ca89b18ead5ee7be579f130c2a'" "$helper" \
+if grep -Fq "PAYLOAD_COMMIT='505bb02a435e205d14d5ad2459dc2e24e1493f13'" "$helper" \
   && grep -Fq "ARCHIVE_SHA256='$expected_sha'" "$helper"; then
   pass immutable-payload-pin
 else
@@ -152,3 +152,4 @@ fi
 
 printf 'frontend helper tests: passed=%s failed=%s\n' "$pass_count" "$fail_count"
 ((fail_count == 0))
+

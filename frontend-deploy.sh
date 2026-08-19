@@ -2,13 +2,13 @@
 set -Eeuo pipefail
 
 readonly BOOTSTRAP_REPOSITORY='yovoweqif674-cyber/pokerops-bootstrap'
-readonly PAYLOAD_COMMIT='894be971df2b55ca89b18ead5ee7be579f130c2a'
+readonly PAYLOAD_COMMIT='505bb02a435e205d14d5ad2459dc2e24e1493f13'
 readonly SOURCE_REPOSITORY='yovoweqif674-cyber/po'
-readonly SOURCE_COMMIT='2a9e20c4804f7b5196a1e43356cb2503f5773c97'
+readonly SOURCE_COMMIT='da2c830948ef17dd93b77ed6200b6f749c5746b9'
 readonly ARCHIVE_NAME='pokerops-tournament-ui.zip'
 readonly MANIFEST_NAME='pokerops-tournament-ui.manifest.json'
-readonly ARCHIVE_SHA256='655bdef3b5ab44a34045c01ade637962dd4ae41f52a970c69034e9992db9f7f9'
-readonly INDEX_JS='assets/index-MCSD7vkL.js'
+readonly ARCHIVE_SHA256='6801d128785bbd8e883ee4898c365c0498da75ef935700912ff80a1e686d081f'
+readonly INDEX_JS='assets/index-BGxDxLGR.js'
 readonly INDEX_CSS='assets/index-B5yM79TK.css'
 readonly RAW_ROOT="https://raw.githubusercontent.com/${BOOTSTRAP_REPOSITORY}/${PAYLOAD_COMMIT}"
 readonly ARCHIVE_URL="${RAW_ROOT}/${ARCHIVE_NAME}"
@@ -193,7 +193,7 @@ extract_root = pathlib.Path(os.environ['EXTRACT_ROOT_VALUE'])
 
 with zipfile.ZipFile(archive) as bundle:
     infos = bundle.infolist()
-    if len(infos) != 67:
+    if len(infos) != 66:
         raise SystemExit('unexpected archive entry count')
 
     seen = set()
@@ -579,3 +579,4 @@ main() {
 if [[ "${POKEROPS_FRONTEND_DEPLOY_LIBRARY_ONLY:-0}" != '1' ]]; then
   main "$@"
 fi
+
