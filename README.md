@@ -1,5 +1,18 @@
 # PokerOps Tournament Ingestion bootstrap
 
+## Runtime-only break-glass deployment
+
+`runtime-only-deploy.sh` deploys one exact application commit using the existing
+restricted worker runtime configuration already installed on the VPS. It never
+requests an administrative database URL, does not run migrations, and does not
+execute SQL or DDL. The script verifies the private GitHub commit, builds one
+Docker worker, performs two live catalog collections, checks duplicate safety,
+tests restart and queue recovery, preserves `/var/www/pokerops`, and activates
+the release only after all checks pass.
+
+Run it as root with a full 40-character commit SHA. Use a raw URL pinned to the
+exact bootstrap commit supplied with the deployment handoff.
+
 This public repository contains the secret-free bootstrap entrypoint for PokerOps Tournament Ingestion.
 It installs missing Ubuntu/Debian dependencies, authenticates the root GitHub CLI session when needed,
 requests a short-lived age-encrypted configuration artifact, verifies an immutable application Release,
