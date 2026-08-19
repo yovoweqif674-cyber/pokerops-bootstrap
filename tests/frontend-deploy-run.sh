@@ -126,14 +126,15 @@ fi
 if grep -Fq 'restore_frontend' "$helper" \
   && grep -Fq 'restore_nginx' "$helper" \
   && grep -Fq 'rollback_nginx_restore_status=' "$helper" \
-  && grep -Fq 'rollback_frontend_restore_status=' "$helper"; then
+  && grep -Fq 'rollback_frontend_restore_status=' "$helper" \
+  && grep -Fq 'rollback_nginx_config_status=' "$helper"; then
   pass rollback-gates
 else
   fail_test rollback-gates
 fi
 
 if grep -Fq 'local resolve_target="${SITE_HOST}:443:127.0.0.1"' "$helper" \
-  && grep -Fq 'curl --resolve "$resolve_target"' "$helper" \
+  && grep -Fq "curl --noproxy '*' --resolve \"\$resolve_target\"" "$helper" \
   && grep -Fq 'local Nginx ingestion status response is invalid' "$helper"; then
   pass local-nginx-public-smoke
 else
