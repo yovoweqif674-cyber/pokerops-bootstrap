@@ -736,4 +736,3 @@ main() {
 if [[ "${POKEROPS_FRONTEND_DEPLOY_LIBRARY_ONLY:-0}" != '1' ]]; then
   main "$@"
 fi
-
