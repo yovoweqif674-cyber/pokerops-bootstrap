@@ -14,6 +14,16 @@ def extract_patcher(helper: pathlib.Path) -> str:
     return text[start:end]
 
 
+def extract_effective_verifier(helper: pathlib.Path) -> str:
+    text = helper.read_text(encoding='utf-8')
+    anchor = 'EFFECTIVE_NGINX_VALUE="$work_dir/nginx-effective.conf"'
+    start = text.index(anchor)
+    start = text.index("python3 <<'PY'", start) + len("python3 <<'PY'")
+    start = text.index('\n', start) + 1
+    end = text.index('\nPY\n', start)
+    return text[start:end]
+
+
 def run_patcher(code: str, source: pathlib.Path, target: pathlib.Path) -> None:
     old = dict(os.environ)
     try:
@@ -26,9 +36,25 @@ def run_patcher(code: str, source: pathlib.Path, target: pathlib.Path) -> None:
         os.environ.update(old)
 
 
+def verify_effective(code: str, config: pathlib.Path) -> bool:
+    old = dict(os.environ)
+    try:
+        os.environ['EFFECTIVE_NGINX_VALUE'] = str(config)
+        os.environ['SITE_HOST_VALUE'] = 'forprofit.pro'
+        try:
+            exec(compile(code, '<embedded-effective-nginx-verifier>', 'exec'), {})
+            return True
+        except SystemExit:
+            return False
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+
+
 def main() -> None:
     helper = pathlib.Path(sys.argv[1]).resolve()
     code = extract_patcher(helper)
+    verifier_code = extract_effective_verifier(helper)
     fixture = '''server {
     listen 443 ssl;
     server_name forprofit.pro www.forprofit.pro;
@@ -65,6 +91,16 @@ def main() -> None:
         second_text = second.read_text(encoding='utf-8')
         assert second_text.count('# BEGIN POKEROPS TOURNAMENT INGESTION') == 1
         assert second_text.count('proxy_pass http://127.0.0.1:8787/;') == 1
+
+        assert verify_effective(verifier_code, first)
+
+        duplicate = root / 'duplicate-tls.conf'
+        duplicate.write_text(first_text + '\n' + first_text, encoding='utf-8')
+        assert not verify_effective(verifier_code, duplicate)
+
+        missing = root / 'missing-proxy.conf'
+        missing.write_text(fixture, encoding='utf-8')
+        assert not verify_effective(verifier_code, missing)
 
     print('nginx_patch_fixture=PASS')
 
