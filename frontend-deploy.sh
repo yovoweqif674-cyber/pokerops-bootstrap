@@ -48,7 +48,13 @@ reload_nginx() {
   if command -v systemctl >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1; then
     return
   fi
-  nginx -s reload >/dev/null
+  if nginx -s reload >/dev/null 2>&1; then
+    return
+  fi
+  if [[ -r /run/nginx.pid ]] && kill -HUP "$(cat /run/nginx.pid)" >/dev/null 2>&1; then
+    return
+  fi
+  return 1
 }
 
 restore_frontend() {
@@ -77,16 +83,21 @@ on_error() {
   local rollback='not-required'
   local nginx_restore_status=0
   local frontend_restore_status=0
+  local nginx_config_status=0
   local nginx_reload_status=0
   if [[ "$frontend_changed" == true || "$nginx_changed" == true ]]; then
     rollback='failed'
     restore_nginx || nginx_restore_status=$?
     restore_frontend || frontend_restore_status=$?
     if [[ "$nginx_restore_status" -eq 0 && "$frontend_restore_status" -eq 0 ]]; then
-      if nginx -t >/dev/null 2>&1 && reload_nginx; then
-        rollback='complete'
+      if nginx -t >/dev/null 2>&1; then
+        if reload_nginx; then
+          rollback='complete'
+        else
+          nginx_reload_status=$?
+        fi
       else
-        nginx_reload_status=$?
+        nginx_config_status=$?
       fi
     fi
   fi
@@ -97,6 +108,7 @@ on_error() {
     "rollback=${rollback}" \
     "rollback_nginx_restore_status=${nginx_restore_status}" \
     "rollback_frontend_restore_status=${frontend_restore_status}" \
+    "rollback_nginx_config_status=${nginx_config_status}" \
     "rollback_nginx_reload_status=${nginx_reload_status}" \
     'retry=rerun-the-same-pinned-command'
   exit "$status"
@@ -392,21 +404,16 @@ while True:
     pieces.append(text[position:start])
     block = text[start:end + 1]
     block = marker.sub('\n', block)
-    if web_root in block or ('server_name' in block and 'forprofit.pro' in block and 'root' in block):
+    is_forprofit_server = re.search(
+        r'^\s*server_name\s+[^;]*\bforprofit\.pro\b[^;]*;', block, re.M
+    ) is not None
+    if web_root in block or is_forprofit_server:
         lines = block.splitlines()
-        anchor = None
-        for index, line in enumerate(lines):
-            if re.search(r'^\s*index\s+index\.html\s*;', line):
-                anchor = index
-                break
-        if anchor is None:
-            for index, line in enumerate(lines):
-                if re.search(r'^\s*root\s+', line):
-                    anchor = index
-                    break
-        if anchor is None:
-            raise RuntimeError('Nginx site has no root/index anchor')
-        lines[anchor + 1:anchor + 1] = ['', managed]
+        if not lines or '{' not in lines[0]:
+            raise RuntimeError('invalid Nginx server block')
+        # Insert directly under `server {` so the managed locations can never
+        # be nested accidentally inside an existing location block.
+        lines[1:1] = ['', managed]
         block = '\n'.join(lines)
         patched_count += 1
 
@@ -454,6 +461,9 @@ deploy_frontend_and_nginx() {
   install -o root -g root -m 644 "$work_dir/nginx-site-patched.conf" "$site_path"
   nginx -t
   reload_nginx
+  nginx -T >"$work_dir/nginx-effective.conf" 2>&1
+  grep -Fq 'location ^~ /tournament-ingestion-api/' "$work_dir/nginx-effective.conf" \
+    || fail 'managed Nginx proxy is not active'
 }
 
 verify_public_frontend() {
@@ -468,17 +478,17 @@ verify_public_frontend() {
   # Verify the exact production Nginx vhost locally. A VPS resolving its own
   # public hostname through an external proxy/CDN can receive an unrelated
   # HTML error even when the local vhost is healthy.
-  curl --resolve "$resolve_target" -fsS --max-time 20 \
+  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 20 \
     -o "$page_path" "${SITE_URL}${UI_ROUTE}"
   grep -Fq '<title>PokerOps Dashboard</title>' "$page_path" || fail 'production UI route did not return PokerOps shell'
 
-  curl --resolve "$resolve_target" -fsS --max-time 15 \
+  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 15 \
     -o "$health_path" "${SITE_URL}${API_PREFIX}/health"
-  curl --resolve "$resolve_target" -fsS --max-time 15 \
+  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 15 \
     -o "$ready_path" "${SITE_URL}${API_PREFIX}/ready"
-  curl --resolve "$resolve_target" -fsS --max-time 20 \
+  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 20 \
     -o "$status_path" "${SITE_URL}${API_PREFIX}/api/ingestion/status"
-  curl --resolve "$resolve_target" -fsS --max-time 20 \
+  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 20 \
     -o "$catalog_path" "${SITE_URL}${API_PREFIX}/api/tournaments?limit=1&offset=0"
 
   jq -e '.status == "ok"' "$health_path" >/dev/null 2>&1 || fail 'local Nginx health response is invalid'
@@ -489,12 +499,13 @@ verify_public_frontend() {
     || fail 'local Nginx tournament catalog response is invalid'
 
   local write_status
-  write_status="$(curl --resolve "$resolve_target" -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+  write_status="$(curl --noproxy '*' --resolve "$resolve_target" -sS --max-time 15 -o /dev/null -w '%{http_code}' \
     -X POST "${SITE_URL}${API_PREFIX}/internal/catalog/collect" || true)"
   [[ "$write_status" == '404' || "$write_status" == '405' ]] || fail 'public proxy did not block internal write endpoint'
 
   local live_index="$work_dir/live-index.html"
-  curl --resolve "$resolve_target" -fsS --max-time 15 -o "$live_index" "${SITE_URL}/index.html"
+  curl --noproxy '*' --resolve "$resolve_target" -fsS --max-time 15 \
+    -o "$live_index" "${SITE_URL}/index.html"
   grep -Fq "$INDEX_JS" "$live_index" || fail 'public index JS is stale'
   grep -Fq "$INDEX_CSS" "$live_index" || fail 'public index CSS is stale'
 }
