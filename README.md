@@ -8,7 +8,7 @@ fixed application Release, and then publishes the matching Tournament Catalog
 frontend. The wrapper accepts no arguments and contains no secrets.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yovoweqif674-cyber/pokerops-bootstrap/deploy-v3/deploy.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yovoweqif674-cyber/pokerops-bootstrap/FULL_WRAPPER_COMMIT/deploy.sh | sudo bash
 ```
 
 ## Tournament catalog frontend
@@ -37,10 +37,15 @@ or migration credential.
 `runtime-only-deploy.sh` deploys one exact application commit using the existing
 restricted worker runtime configuration already installed on the VPS. It never
 requests an administrative database URL, does not run migrations, and does not
-execute SQL or DDL. The script verifies the private GitHub commit, builds one
-Docker worker, performs two live catalog collections, checks duplicate safety,
-tests restart and queue recovery, preserves `/var/www/pokerops`, and activates
-the release only after all checks pass.
+execute SQL or DDL. The script verifies the private GitHub commit, builds the
+exact Docker image, stops the previous permanent scheduler, runs exactly one
+isolated `--once` catalog/info/state live smoke, and only then starts the
+permanent worker. It requires fresh scheduler, job-worker, and catalog
+heartbeats, completed startup reconciliation, zero stuck runs, expired leases,
+and unclassified failures, sanitized catalog/detail/timeline contracts, scoped
+facets, restart and queue recovery, and an unchanged `/var/www/pokerops` before
+activation. Known terminal failures are reported explicitly and are the only
+permitted degraded operational state.
 
 If the shared runtime env is missing, the helper generates a one-time age key,
 dispatches the runtime-only sealed-config workflow from `deployment-control`,
@@ -60,14 +65,16 @@ secrets are encrypted to a fresh age X25519 recipient generated on the VPS for e
 
 ## Production command
 
-Always pin the raw script URL to the full bootstrap commit and pass the full application Release commit:
+Always pin the raw wrapper URL to the full bootstrap commit. The wrapper itself
+pins the exact application Release, runtime helper, frontend helper, payload,
+and every SHA-256:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yovoweqif674-cyber/pokerops-bootstrap/FULL_BOOTSTRAP_COMMIT/tournament-ingestion.sh \
-  | sudo bash -s -- FULL_APPLICATION_RELEASE_COMMIT
+curl -fsSL https://raw.githubusercontent.com/yovoweqif674-cyber/pokerops-bootstrap/FULL_WRAPPER_COMMIT/deploy.sh | sudo bash
 ```
 
-The only permitted flags precede the application SHA: `--refresh-config`, `--skip-config-refresh`, and
-`--diagnostics-only`. The default safely refreshes shared configuration before deployment.
+The legacy `tournament-ingestion.sh` remains available only through the
+preserved `deploy-v3` rollback line. The new runtime-only path neither accepts
+nor requests a migration URL and never executes `migrate.mjs`, SQL, or DDL.
 
 No VPS deployment is performed by publishing or testing this repository.

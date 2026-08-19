@@ -258,8 +258,8 @@ obtain_runtime_env() {
 }
 
 wait_for_health() {
-  local container_id="$1" attempt health running
-  for attempt in $(seq 1 90); do
+  local container_id="$1" health running
+  for _ in $(seq 1 90); do
     running="$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null || true)"
     health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || true)"
     if [[ "$running" == true && "$health" == healthy ]]; then
@@ -270,16 +270,128 @@ wait_for_health() {
   die "worker did not become healthy"
 }
 
-wait_for_scheduler() {
-  local attempt status_json
-  for attempt in $(seq 1 60); do
+validate_operational_health_json() {
+  local health_json="$1"
+  jq -e '
+    .data as $health |
+    ($health.catalog.fresh == true) and
+    ($health.scheduler.fresh == true) and
+    ($health.jobWorker.fresh == true) and
+    ($health.runs.stuck == 0) and
+    ($health.queue.unclassified == 0) and
+    ($health.queue.expiredLeases == 0) and
+    ($health.queue.failed == $health.queue.terminal) and
+    (
+      $health.status == "healthy" or
+      (
+        $health.status == "degraded" and
+        $health.queue.terminal > 0 and
+        (($health.reasons | sort) == ["failed_jobs_present"])
+      )
+    )
+  ' >/dev/null 2>&1 <<<"$health_json"
+}
+
+validate_startup_reconciliation_json() {
+  local status_json="$1"
+  jq -e '
+    .data.startupReconciliation as $reconciliation |
+    ($reconciliation | type == "object") and
+    ($reconciliation.status == "completed") and
+    ($reconciliation.reconciledAt | type == "string" and length > 0) and
+    ($reconciliation.orphanedRunsClosed | type == "number") and
+    ($reconciliation.expiredLeasesRecovered | type == "number") and
+    ($reconciliation.jobsRequeued | type == "number") and
+    ($reconciliation.jobsCancelled | type == "number") and
+    ($reconciliation.jobsTerminal | type == "number") and
+    ($reconciliation.jobsUnclassified == 0)
+  ' >/dev/null 2>&1 <<<"$status_json"
+}
+
+log_operational_summary() {
+  local health_json="$1"
+  log "operational_status=$(jq -r '.data.status // "missing"' <<<"$health_json")"
+  log "operational_reason_codes=$(jq -r '(.data.reasons // []) | join(",")' <<<"$health_json")"
+  log "terminal_jobs=$(jq -r '.data.queue.terminal // -1' <<<"$health_json")"
+  log "unclassified_jobs=$(jq -r '.data.queue.unclassified // -1' <<<"$health_json")"
+  log "expired_leases=$(jq -r '.data.queue.expiredLeases // -1' <<<"$health_json")"
+  log "stuck_runs=$(jq -r '.data.runs.stuck // -1' <<<"$health_json")"
+}
+
+wait_for_operational_health() {
+  local health_json status_json
+  for _ in $(seq 1 90); do
+    health_json="$(curl -fsS "$API_BASE/api/ingestion/health" 2>/dev/null || true)"
     status_json="$(curl -fsS "$API_BASE/api/ingestion/status" 2>/dev/null || true)"
-    if jq -e '.data.workers.scheduler.leader == true' >/dev/null 2>&1 <<<"$status_json"; then
+    if validate_operational_health_json "$health_json" \
+      && validate_startup_reconciliation_json "$status_json"; then
+      printf '%s' "$health_json" >"$temporary_root/operational-health.json"
+      printf '%s' "$status_json" >"$temporary_root/ingestion-status.json"
       return
     fi
     sleep 2
   done
-  die "scheduler leadership was not established"
+  log_operational_summary "$health_json"
+  die "operational health or startup reconciliation gate failed"
+}
+
+assert_sanitized_json() {
+  local file="$1"
+  jq -e '
+    [recurse(.[]?; true) | objects | keys[] |
+      select(test("^(raw|rawPayload|payload|headers|cookies|authorization|token|password|proxy|captcha|session|html|body|stack|errorMessage)$"; "i"))
+    ] | length == 0
+  ' "$file" >/dev/null || die "public API response exposes a forbidden field"
+}
+
+verify_catalog_contracts() {
+  local status_path="$temporary_root/ingestion-status.json"
+  local current_path="$temporary_root/current-catalog.json"
+  local filtered_path="$temporary_root/filtered-catalog.json"
+  local detail_path="$temporary_root/tournament-detail.json"
+  local timeline_path="$temporary_root/tournament-timeline.json"
+  local tournament_id status_filter scope_total
+
+  curl -fsS "$API_BASE/api/ingestion/status" >"$status_path"
+  curl -fsS "$API_BASE/api/tournaments?scope=current&limit=1&offset=0" >"$current_path"
+  jq -e '
+    (.data | type == "array" and length == 1) and
+    (.data[0].presentInLatestSuccessfulCatalog == true) and
+    (.pagination.total >= 1) and
+    (.facets.scopeTotal >= .pagination.total) and
+    (.facets.canonicalDuplicates == 0)
+  ' "$current_path" >/dev/null || die "current catalog contract validation failed"
+  jq -e '.data.catalog.uniqueTournaments >= 1 and .data.catalog.canonicalDuplicates == 0' \
+    "$status_path" >/dev/null || die "ingestion catalog status validation failed"
+
+  status_filter="$(jq -r '
+    .facets as $facets |
+    [$facets.byStatus | to_entries[] | select(.value > 0 and .value < $facets.scopeTotal) | .key][0] // empty
+  ' "$current_path")"
+  [[ "$status_filter" =~ ^[a-z]+$ ]] || die "catalog data cannot prove filtered and scoped totals"
+  scope_total="$(jq -r '.facets.scopeTotal' "$current_path")"
+  curl -fsS "$API_BASE/api/tournaments?scope=current&status=$status_filter&limit=1&offset=0" >"$filtered_path"
+  jq -e --arg status "$status_filter" --argjson scopeTotal "$scope_total" '
+    (.facets.scopeTotal == $scopeTotal) and
+    (.pagination.total == .facets.byStatus[$status]) and
+    (.pagination.total < .facets.scopeTotal) and
+    (.facets.canonicalDuplicates == 0)
+  ' "$filtered_path" >/dev/null || die "filtered pagination and scoped facets contract validation failed"
+
+  tournament_id="$(jq -r '.data[0].externalTournamentId // empty' "$current_path")"
+  [[ "$tournament_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "catalog returned an invalid tournament identifier"
+  curl -fsS "$API_BASE/api/tournaments/$tournament_id" >"$detail_path"
+  curl -fsS "$API_BASE/api/tournaments/$tournament_id/timeline?limit=10" >"$timeline_path"
+  jq -e '.data.tournament.presentInLatestSuccessfulCatalog == true' "$detail_path" >/dev/null \
+    || die "tournament detail membership contract validation failed"
+  jq -e '.data | type == "array" and length >= 1' "$timeline_path" >/dev/null \
+    || die "tournament timeline contract validation failed"
+
+  assert_sanitized_json "$status_path"
+  assert_sanitized_json "$current_path"
+  assert_sanitized_json "$filtered_path"
+  assert_sanitized_json "$detail_path"
+  assert_sanitized_json "$timeline_path"
 }
 
 internal_post() {
@@ -307,9 +419,8 @@ restore_previous_release() {
     ln -sfn "$INSTALL_ROOT/shared/.env.tournament.local" "$old_service/.env.tournament.local"
     (
       cd "$old_service"
-      export TOURNAMENT_RELEASE_SHA="$old_sha"
-      export TOURNAMENT_IMAGE_TAG="$old_sha"
-      docker compose up -d worker >/dev/null
+      TOURNAMENT_RELEASE_SHA="$old_sha" TOURNAMENT_IMAGE_TAG="$old_sha" \
+        docker compose up -d worker >/dev/null
     ) || true
   elif [[ -n "$new_service_dir" && -d "$new_service_dir" ]]; then
     (
@@ -450,9 +561,26 @@ main() {
   docker compose config --quiet
   docker compose build --pull worker
 
-  stage="worker-start"
-  docker compose up -d worker
+  stage="existing-worker-stop"
   new_worker_started=true
+  docker compose stop worker >/dev/null 2>&1 || true
+  [[ "$(docker ps -q \
+    --filter "label=com.docker.compose.project=$SERVICE" \
+    --filter 'label=com.docker.compose.service=worker' | wc -l | tr -d ' ')" == 0 ]] \
+    || die "existing permanent worker did not stop before one-shot collection"
+
+  stage="one-shot-live-smoke"
+  if ! docker compose run --rm --no-deps worker node dist/index.js --once \
+    >"$temporary_root/one-shot.log" 2>&1; then
+    die "one-shot live smoke failed"
+  fi
+  [[ "$(docker ps -q \
+    --filter "label=com.docker.compose.project=$SERVICE" \
+    --filter 'label=com.docker.compose.service=worker' | wc -l | tr -d ' ')" == 0 ]] \
+    || die "one-shot container remained active before permanent worker start"
+
+  stage="permanent-worker-start"
+  docker compose up -d worker
   local container_id
   container_id="$(docker compose ps -q worker)"
   [[ -n "$container_id" ]] || die "worker container was not created"
@@ -475,18 +603,8 @@ main() {
   curl -fsS "$API_BASE/health" | jq -e '.status == "ok"' >/dev/null
   curl -fsS "$API_BASE/ready" | jq -e '.status == "ready"' >/dev/null
   local status_json
-  status_json="$(curl -fsS "$API_BASE/api/ingestion/status")"
-  jq -e '.data.catalog.canonicalDuplicates == 0' >/dev/null <<<"$status_json"
-
-  stage="first-live-collect"
-  internal_post /internal/catalog/collect
-  status_json="$(curl -fsS "$API_BASE/api/ingestion/status")"
-  jq -e '.data.catalog.uniqueTournaments >= 1 and .data.catalog.canonicalDuplicates == 0' >/dev/null <<<"$status_json"
-
-  stage="second-live-collect"
-  internal_post /internal/catalog/collect
-  status_json="$(curl -fsS "$API_BASE/api/ingestion/status")"
-  jq -e '.data.catalog.uniqueTournaments >= 1 and .data.catalog.canonicalDuplicates == 0' >/dev/null <<<"$status_json"
+  wait_for_operational_health
+  verify_catalog_contracts
 
   stage="controlled-restart"
   docker compose restart worker >/dev/null
@@ -494,9 +612,10 @@ main() {
   wait_for_health "$container_id"
   curl -fsS "$API_BASE/health" | jq -e '.status == "ok"' >/dev/null
   curl -fsS "$API_BASE/ready" | jq -e '.status == "ready"' >/dev/null
+  wait_for_operational_health
+  verify_catalog_contracts
 
-  stage="scheduler-queue-recovery"
-  wait_for_scheduler
+  stage="queue-recovery"
   internal_post /internal/queue-recovery/probe
   local restart_count_before restart_count_after
   restart_count_before="$(docker inspect --format '{{.RestartCount}}' "$container_id")"
@@ -511,7 +630,7 @@ main() {
   done >"$secret_patterns"
   chmod 0600 "$secret_patterns"
   docker compose logs --no-color --tail=1000 worker >"$temporary_root/worker.log"
-  if grep -F -f "$secret_patterns" "$temporary_root/worker.log" >/dev/null; then
+  if grep -F -f "$secret_patterns" "$temporary_root/worker.log" "$temporary_root/one-shot.log" >/dev/null; then
     die "worker logs contain a protected runtime value"
   fi
 
@@ -526,6 +645,8 @@ main() {
   [[ "$(readlink -f "$INSTALL_ROOT/current")" == "$release_dir" ]] || die "current release activation failed"
 
   status_json="$(curl -fsS "$API_BASE/api/ingestion/status")"
+  local health_json
+  health_json="$(curl -fsS "$API_BASE/api/ingestion/health")"
   local image_id timestamp report_tmp
   image_id="$(docker inspect --format '{{.Image}}' "$container_id")"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -544,7 +665,14 @@ main() {
     --argjson sng "$(jq '.data.catalog.sng' <<<"$status_json")" \
     --argjson unique "$(jq '.data.catalog.uniqueTournaments' <<<"$status_json")" \
     --argjson duplicates "$(jq '.data.catalog.canonicalDuplicates' <<<"$status_json")" \
-    '{schemaVersion:$schemaVersion,service:$service,releaseSha:$releaseSha,imageId:$imageId,projectRef:$projectRef,runtimeEnvSha256:$runtimeEnvSha256,frontendSha256:$frontendSha256,health:"ok",readiness:"ready",scheduledCount:$scheduled,sngCount:$sng,uniqueCount:$unique,duplicateCount:$duplicates,restart:"ok",scheduler:"leader",queueRecovery:"ok",frontendUnchanged:true,generatedAt:$generatedAt}' \
+    --arg operationalStatus "$(jq -r '.data.status' <<<"$health_json")" \
+    --argjson schedulerFresh "$(jq '.data.scheduler.fresh' <<<"$health_json")" \
+    --argjson jobWorkerFresh "$(jq '.data.jobWorker.fresh' <<<"$health_json")" \
+    --argjson catalogFresh "$(jq '.data.catalog.fresh' <<<"$health_json")" \
+    --argjson terminalJobs "$(jq '.data.queue.terminal' <<<"$health_json")" \
+    --argjson unclassifiedJobs "$(jq '.data.queue.unclassified' <<<"$health_json")" \
+    --argjson startupReconciliation "$(jq '.data.startupReconciliation' <<<"$status_json")" \
+    '{schemaVersion:$schemaVersion,service:$service,releaseSha:$releaseSha,imageId:$imageId,projectRef:$projectRef,runtimeEnvSha256:$runtimeEnvSha256,frontendSha256:$frontendSha256,health:"ok",readiness:"ready",operationalStatus:$operationalStatus,schedulerFresh:$schedulerFresh,jobWorkerFresh:$jobWorkerFresh,catalogFresh:$catalogFresh,terminalJobs:$terminalJobs,unclassifiedJobs:$unclassifiedJobs,startupReconciliation:$startupReconciliation,scheduledCount:$scheduled,sngCount:$sng,uniqueCount:$unique,duplicateCount:$duplicates,restart:"ok",queueRecovery:"ok",frontendUnchanged:true,generatedAt:$generatedAt}' \
       >"$report_tmp"
   install -o root -g root -m 0600 "$report_tmp" "$report_path"
 
@@ -556,12 +684,18 @@ main() {
   log "supabase_project_ref=$SUPABASE_REF"
   log "health=ok"
   log "readiness=ready"
+  log "operational_status=$(jq -r '.data.status' <<<"$health_json")"
+  log "scheduler_fresh=$(jq -r '.data.scheduler.fresh' <<<"$health_json")"
+  log "job_worker_fresh=$(jq -r '.data.jobWorker.fresh' <<<"$health_json")"
+  log "catalog_fresh=$(jq -r '.data.catalog.fresh' <<<"$health_json")"
+  log "terminal_jobs=$(jq -r '.data.queue.terminal' <<<"$health_json")"
+  log "unclassified_jobs=$(jq -r '.data.queue.unclassified' <<<"$health_json")"
+  log "startup_reconciliation_status=$(jq -r '.data.startupReconciliation.status' <<<"$status_json")"
   log "scheduled_count=$(jq -r '.data.catalog.scheduled' <<<"$status_json")"
   log "sng_count=$(jq -r '.data.catalog.sng' <<<"$status_json")"
   log "unique_count=$(jq -r '.data.catalog.uniqueTournaments' <<<"$status_json")"
   log "duplicate_count=$(jq -r '.data.catalog.canonicalDuplicates' <<<"$status_json")"
   log "restart=ok"
-  log "scheduler=leader"
   log "queue_recovery=ok"
   log "frontend_unchanged=true"
   log "report=$report_path"

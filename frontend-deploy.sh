@@ -2,13 +2,13 @@
 set -Eeuo pipefail
 
 readonly BOOTSTRAP_REPOSITORY='yovoweqif674-cyber/pokerops-bootstrap'
-readonly PAYLOAD_COMMIT='8834736917905f1c29bd553e0081dbd44c198ff6'
+readonly PAYLOAD_COMMIT='643516471bb531d21e6c82ad670373a9643a68f1'
 readonly SOURCE_REPOSITORY='yovoweqif674-cyber/po'
-readonly SOURCE_COMMIT='da2c830948ef17dd93b77ed6200b6f749c5746b9'
+readonly SOURCE_COMMIT='5ac17f1bfd0f635c2eeab9438bc5ac048164247b'
 readonly ARCHIVE_NAME='pokerops-tournament-ui.zip'
 readonly MANIFEST_NAME='pokerops-tournament-ui.manifest.json'
-readonly ARCHIVE_SHA256='6801d128785bbd8e883ee4898c365c0498da75ef935700912ff80a1e686d081f'
-readonly INDEX_JS='assets/index-BGxDxLGR.js'
+readonly ARCHIVE_SHA256='6f9bbfcb8116f98c892bec29be988c21cbd9e4d7f48fbf357b6f90e439c4ba96'
+readonly INDEX_JS='assets/index-DgdmSeIh.js'
 readonly INDEX_CSS='assets/index-B5yM79TK.css'
 readonly RAW_ROOT="https://raw.githubusercontent.com/${BOOTSTRAP_REPOSITORY}/${PAYLOAD_COMMIT}"
 readonly ARCHIVE_URL="${RAW_ROOT}/${ARCHIVE_NAME}"
@@ -31,7 +31,6 @@ nginx_backup=''
 frontend_backup=''
 frontend_changed=false
 nginx_changed=false
-deployment_succeeded=false
 timestamp=''
 
 safe_error() {
@@ -81,8 +80,7 @@ on_error() {
     restore_frontend
     local frontend_restore_status=$?
     if [[ "$nginx_restore_status" -eq 0 && "$frontend_restore_status" -eq 0 ]]; then
-      nginx -t >/dev/null 2>&1 && reload_nginx
-      if [[ "$?" -eq 0 ]]; then
+      if nginx -t >/dev/null 2>&1 && reload_nginx; then
         rollback='complete'
       fi
     fi
@@ -242,21 +240,96 @@ PY
   return 0
 }
 
+verify_operational_health_file() {
+  local health_path="$1"
+  jq -e '
+    .data as $health |
+    ($health.catalog.fresh == true) and
+    ($health.scheduler.fresh == true) and
+    ($health.jobWorker.fresh == true) and
+    ($health.runs.stuck == 0) and
+    ($health.queue.unclassified == 0) and
+    ($health.queue.expiredLeases == 0) and
+    ($health.queue.failed == $health.queue.terminal) and
+    (
+      $health.status == "healthy" or
+      ($health.status == "degraded" and $health.queue.terminal > 0 and (($health.reasons | sort) == ["failed_jobs_present"]))
+    )
+  ' "$health_path" >/dev/null || fail 'worker operational health gate failed'
+}
+
+assert_sanitized_json_file() {
+  local path="$1"
+  jq -e '
+    [recurse(.[]?; true) | objects | keys[] |
+      select(test("^(raw|rawPayload|payload|headers|cookies|authorization|token|password|proxy|captcha|session|html|body|stack|errorMessage)$"; "i"))
+    ] | length == 0
+  ' "$path" >/dev/null || fail 'public API response exposes a forbidden field'
+}
+
+verify_catalog_contract_files() {
+  local status_path="$1" catalog_path="$2" filtered_path="$3" detail_path="$4" timeline_path="$5" status_filter="$6"
+  jq -e '
+    (.data | type == "array" and length == 1) and
+    (.data[0].presentInLatestSuccessfulCatalog == true) and
+    (.pagination.total >= 1) and
+    (.facets.scopeTotal >= .pagination.total) and
+    (.facets.canonicalDuplicates == 0)
+  ' "$catalog_path" >/dev/null || fail 'catalog list contract validation failed'
+  local scope_total
+  scope_total="$(jq -r '.facets.scopeTotal' "$catalog_path")"
+  jq -e --arg status "$status_filter" --argjson scopeTotal "$scope_total" '
+    (.facets.scopeTotal == $scopeTotal) and
+    (.pagination.total == .facets.byStatus[$status]) and
+    (.pagination.total < .facets.scopeTotal) and
+    (.facets.canonicalDuplicates == 0)
+  ' "$filtered_path" >/dev/null || fail 'filtered pagination and scoped facets contract validation failed'
+  jq -e '
+    .data.catalog.canonicalDuplicates == 0 and
+    (.data.catalog.uniqueTournaments // 0) > 0 and
+    (.data.startupReconciliation.status == "completed") and
+    (.data.startupReconciliation.jobsUnclassified == 0)
+  ' "$status_path" >/dev/null || fail 'ingestion status contract validation failed'
+  jq -e '.data.tournament.presentInLatestSuccessfulCatalog == true' "$detail_path" >/dev/null \
+    || fail 'tournament detail membership contract validation failed'
+  jq -e '.data | type == "array" and length >= 1' "$timeline_path" >/dev/null \
+    || fail 'tournament timeline contract validation failed'
+  assert_sanitized_json_file "$status_path"
+  assert_sanitized_json_file "$catalog_path"
+  assert_sanitized_json_file "$filtered_path"
+  assert_sanitized_json_file "$detail_path"
+  assert_sanitized_json_file "$timeline_path"
+}
+
 verify_worker_preflight() {
   local health_path="$work_dir/worker-health.json"
   local ready_path="$work_dir/worker-ready.json"
+  local operational_path="$work_dir/worker-operational.json"
   local status_path="$work_dir/worker-status.json"
   local catalog_path="$work_dir/worker-catalog.json"
+  local filtered_path="$work_dir/worker-filtered.json"
+  local detail_path="$work_dir/worker-detail.json"
+  local timeline_path="$work_dir/worker-timeline.json"
+  local tournament_id status_filter
 
   curl -fsS --max-time 10 -o "$health_path" "$WORKER_URL/health"
   curl -fsS --max-time 10 -o "$ready_path" "$WORKER_URL/ready"
+  curl -fsS --max-time 15 -o "$operational_path" "$WORKER_URL/api/ingestion/health"
   curl -fsS --max-time 15 -o "$status_path" "$WORKER_URL/api/ingestion/status"
-  curl -fsS --max-time 15 -o "$catalog_path" "$WORKER_URL/api/tournaments?limit=1&offset=0"
+  curl -fsS --max-time 15 -o "$catalog_path" "$WORKER_URL/api/tournaments?scope=current&limit=1&offset=0"
+
+  tournament_id="$(jq -r '.data[0].externalTournamentId // empty' "$catalog_path")"
+  [[ "$tournament_id" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'catalog returned an invalid tournament identifier'
+  status_filter="$(jq -r '.facets as $facets | [$facets.byStatus | to_entries[] | select(.value > 0 and .value < $facets.scopeTotal) | .key][0] // empty' "$catalog_path")"
+  [[ "$status_filter" =~ ^[a-z]+$ ]] || fail 'catalog data cannot prove filtered and scoped totals'
+  curl -fsS --max-time 15 -o "$filtered_path" "$WORKER_URL/api/tournaments?scope=current&status=$status_filter&limit=1&offset=0"
+  curl -fsS --max-time 15 -o "$detail_path" "$WORKER_URL/api/tournaments/$tournament_id"
+  curl -fsS --max-time 15 -o "$timeline_path" "$WORKER_URL/api/tournaments/$tournament_id/timeline?limit=10"
 
   jq -e '.status == "ok"' "$health_path" >/dev/null
   jq -e '.status == "ready"' "$ready_path" >/dev/null
-  jq -e '.data.catalog.canonicalDuplicates == 0 and (.data.catalog.uniqueTournaments // 0) > 0' "$status_path" >/dev/null
-  jq -e '.data | type == "array" and length > 0' "$catalog_path" >/dev/null
+  verify_operational_health_file "$operational_path"
+  verify_catalog_contract_files "$status_path" "$catalog_path" "$filtered_path" "$detail_path" "$timeline_path" "$status_filter"
 
   ss -ltn | grep -Eq '127\.0\.0\.1:8787[[:space:]]' || fail 'worker is not bound to 127.0.0.1:8787'
   if ss -ltn | grep -Eq '(0\.0\.0\.0|\[::\]):8787[[:space:]]'; then
@@ -454,21 +527,35 @@ verify_public_frontend() {
   local page_path="$work_dir/public-page.html"
   local health_path="$work_dir/public-health.json"
   local ready_path="$work_dir/public-ready.json"
+  local operational_path="$work_dir/public-operational.json"
   local status_path="$work_dir/public-status.json"
   local catalog_path="$work_dir/public-catalog.json"
+  local filtered_path="$work_dir/public-filtered.json"
+  local detail_path="$work_dir/public-detail.json"
+  local timeline_path="$work_dir/public-timeline.json"
+  local tournament_id status_filter
 
   curl -fsS --max-time 20 -o "$page_path" "${SITE_URL}${UI_ROUTE}"
   grep -Fq '<title>PokerOps Dashboard</title>' "$page_path" || fail 'production UI route did not return PokerOps shell'
 
   curl -fsS --max-time 15 -o "$health_path" "${SITE_URL}${API_PREFIX}/health"
   curl -fsS --max-time 15 -o "$ready_path" "${SITE_URL}${API_PREFIX}/ready"
+  curl -fsS --max-time 20 -o "$operational_path" "${SITE_URL}${API_PREFIX}/api/ingestion/health"
   curl -fsS --max-time 20 -o "$status_path" "${SITE_URL}${API_PREFIX}/api/ingestion/status"
-  curl -fsS --max-time 20 -o "$catalog_path" "${SITE_URL}${API_PREFIX}/api/tournaments?limit=1&offset=0"
+  curl -fsS --max-time 20 -o "$catalog_path" "${SITE_URL}${API_PREFIX}/api/tournaments?scope=current&limit=1&offset=0"
+
+  tournament_id="$(jq -r '.data[0].externalTournamentId // empty' "$catalog_path")"
+  [[ "$tournament_id" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'public catalog returned an invalid tournament identifier'
+  status_filter="$(jq -r '.facets as $facets | [$facets.byStatus | to_entries[] | select(.value > 0 and .value < $facets.scopeTotal) | .key][0] // empty' "$catalog_path")"
+  [[ "$status_filter" =~ ^[a-z]+$ ]] || fail 'public catalog cannot prove filtered and scoped totals'
+  curl -fsS --max-time 20 -o "$filtered_path" "${SITE_URL}${API_PREFIX}/api/tournaments?scope=current&status=$status_filter&limit=1&offset=0"
+  curl -fsS --max-time 20 -o "$detail_path" "${SITE_URL}${API_PREFIX}/api/tournaments/$tournament_id"
+  curl -fsS --max-time 20 -o "$timeline_path" "${SITE_URL}${API_PREFIX}/api/tournaments/$tournament_id/timeline?limit=10"
 
   jq -e '.status == "ok"' "$health_path" >/dev/null
   jq -e '.status == "ready"' "$ready_path" >/dev/null
-  jq -e '.data.catalog.canonicalDuplicates == 0 and (.data.catalog.uniqueTournaments // 0) > 0' "$status_path" >/dev/null
-  jq -e '.data | type == "array" and length > 0' "$catalog_path" >/dev/null
+  verify_operational_health_file "$operational_path"
+  verify_catalog_contract_files "$status_path" "$catalog_path" "$filtered_path" "$detail_path" "$timeline_path" "$status_filter"
 
   local write_status
   write_status="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
@@ -483,6 +570,7 @@ verify_public_frontend() {
 
 write_report() {
   local status_path="$work_dir/public-status.json"
+  local operational_path="$work_dir/public-operational.json"
   local unique_count scheduled_count sng_count duplicate_count
   unique_count="$(jq -r '.data.catalog.uniqueTournaments' "$status_path")"
   scheduled_count="$(jq -r '.data.catalog.scheduled' "$status_path")"
@@ -506,17 +594,25 @@ write_report() {
     --argjson scheduledCount "$scheduled_count" \
     --argjson sngCount "$sng_count" \
     --argjson duplicateCount "$duplicate_count" \
+    --arg operationalStatus "$(jq -r '.data.status' "$operational_path")" \
+    --argjson schedulerFresh "$(jq '.data.scheduler.fresh' "$operational_path")" \
+    --argjson jobWorkerFresh "$(jq '.data.jobWorker.fresh' "$operational_path")" \
+    --argjson catalogFresh "$(jq '.data.catalog.fresh' "$operational_path")" \
+    --argjson terminalJobs "$(jq '.data.queue.terminal' "$operational_path")" \
+    --argjson unclassifiedJobs "$(jq '.data.queue.unclassified' "$operational_path")" \
     '{schemaVersion: 1, service: "pokerops-tournament-catalog-ui", deployedAt: $deployedAt,
       siteUrl: $siteUrl, mode: "read-only-preview", sourceRepository: $sourceRepository,
       sourceCommit: $sourceCommit, payloadCommit: $payloadCommit, archiveSha256: $archiveSha256,
       indexJs: $indexJs, indexCss: $indexCss, health: "ok", readiness: "ready",
       uniqueCount: $uniqueCount, scheduledCount: $scheduledCount, sngCount: $sngCount,
-      duplicateCount: $duplicateCount, publicWriteEndpoints: "blocked", workerBinding: "loopback",
+      duplicateCount: $duplicateCount, operationalStatus: $operationalStatus,
+      schedulerFresh: $schedulerFresh, jobWorkerFresh: $jobWorkerFresh, catalogFresh: $catalogFresh,
+      terminalJobs: $terminalJobs, unclassifiedJobs: $unclassifiedJobs,
+      publicWriteEndpoints: "blocked", workerBinding: "loopback",
       frontendBackup: $frontendBackup, nginxBackup: $nginxBackup}' \
     >"$work_dir/report.json"
   install -o root -g root -m 600 "$work_dir/report.json" "$report_path"
 
-  deployment_succeeded=true
   frontend_changed=false
   nginx_changed=false
 
@@ -530,6 +626,12 @@ write_report() {
     "index_css=${INDEX_CSS}" \
     'health=ok' \
     'readiness=ready' \
+    "operational_status=$(jq -r '.data.status' "$operational_path")" \
+    "scheduler_fresh=$(jq -r '.data.scheduler.fresh' "$operational_path")" \
+    "job_worker_fresh=$(jq -r '.data.jobWorker.fresh' "$operational_path")" \
+    "catalog_fresh=$(jq -r '.data.catalog.fresh' "$operational_path")" \
+    "terminal_jobs=$(jq -r '.data.queue.terminal' "$operational_path")" \
+    "unclassified_jobs=$(jq -r '.data.queue.unclassified' "$operational_path")" \
     "scheduled_count=${scheduled_count}" \
     "sng_count=${sng_count}" \
     "unique_count=${unique_count}" \
