@@ -125,10 +125,19 @@ fi
 
 if grep -Fq 'restore_frontend' "$helper" \
   && grep -Fq 'restore_nginx' "$helper" \
-  && grep -Fq 'rollback=' "$helper"; then
+  && grep -Fq 'rollback_nginx_restore_status=' "$helper" \
+  && grep -Fq 'rollback_frontend_restore_status=' "$helper"; then
   pass rollback-gates
 else
   fail_test rollback-gates
+fi
+
+if grep -Fq 'local resolve_target="${SITE_HOST}:443:127.0.0.1"' "$helper" \
+  && grep -Fq 'curl --resolve "$resolve_target"' "$helper" \
+  && grep -Fq 'local Nginx ingestion status response is invalid' "$helper"; then
+  pass local-nginx-public-smoke
+else
+  fail_test local-nginx-public-smoke
 fi
 
 if python3 "$repository_root/tests/test_frontend_nginx_patch.py" "$helper" >/dev/null; then
@@ -152,3 +161,4 @@ fi
 
 printf 'frontend helper tests: passed=%s failed=%s\n' "$pass_count" "$fail_count"
 ((fail_count == 0))
+
