@@ -127,7 +127,9 @@ if grep -Fq 'restore_frontend' "$helper" \
   && grep -Fq 'restore_nginx' "$helper" \
   && grep -Fq 'rollback_nginx_restore_status=' "$helper" \
   && grep -Fq 'rollback_frontend_restore_status=' "$helper" \
-  && grep -Fq 'rollback_nginx_config_status=' "$helper"; then
+  && grep -Fq 'rollback_nginx_config_status=' "$helper" \
+  && grep -Fq 'frontend_index_before_sha' "$helper" \
+  && grep -Fq 'nginx_before_sha' "$helper"; then
   pass rollback-gates
 else
   fail_test rollback-gates
@@ -135,10 +137,92 @@ fi
 
 if grep -Fq 'local resolve_target="${SITE_HOST}:443:127.0.0.1"' "$helper" \
   && grep -Fq "curl --noproxy '*' --resolve \"\$resolve_target\"" "$helper" \
-  && grep -Fq 'local Nginx ingestion status response is invalid' "$helper"; then
+  && grep -Fq 'wait_for_local_json' "$helper" \
+  && grep -Fq 'classify_safe_response' "$helper"; then
   pass local-nginx-public-smoke
 else
   fail_test local-nginx-public-smoke
+fi
+
+if grep -Fq 'nginx-effective-preflight.conf' "$helper" \
+  && grep -Fq 'nginx-active-files.txt' "$helper" \
+  && grep -Fq 'expected exactly one active TLS server for production host' "$helper" \
+  && grep -Fq 'for attempt in $(seq 1 45)' "$helper"; then
+  pass active-nginx-and-reload-convergence
+else
+  fail_test active-nginx-and-reload-convergence
+fi
+
+if (
+  retry_root="$work_root/json-convergence"
+  mkdir -p "$retry_root"
+  retry_attempts=0
+  curl() {
+    retry_attempts=$((retry_attempts + 1))
+    local output_path=''
+    while [[ "$#" -gt 0 ]]; do
+      if [[ "$1" == '-o' ]]; then
+        shift
+        output_path=$1
+      fi
+      shift
+    done
+    if [[ "$retry_attempts" -lt 3 ]]; then
+      printf '<html>not ready</html>\n' >"$output_path"
+    else
+      printf '{"status":"ok"}\n' >"$output_path"
+    fi
+  }
+  jq() {
+    local response_path="${!#}"
+    grep -Eq '^\{"status":"ok"\}$' "$response_path"
+  }
+  sleep() { :; }
+  wait_for_local_json 'https://forprofit.pro/test' "$retry_root/result.json" \
+    '.status == "ok"' 'test'
+  [[ "$retry_attempts" -eq 3 ]] \
+    && grep -Fq '"status":"ok"' "$retry_root/result.json"
+); then
+  pass delayed-nginx-json-convergence
+else
+  fail_test delayed-nginx-json-convergence
+fi
+
+if (
+  reload_attempts=0
+  systemctl() {
+    reload_attempts=$((reload_attempts + 1))
+    [[ "$reload_attempts" -ge 3 ]]
+  }
+  nginx() { return 1; }
+  sleep() { :; }
+  reload_nginx
+  [[ "$reload_attempts" -eq 3 ]]
+); then
+  pass nginx-reload-retry
+else
+  fail_test nginx-reload-retry
+fi
+
+classification_root="$work_root/response-classification"
+mkdir -p "$classification_root"
+printf '<!doctype html><title>SPA</title>\n' >"$classification_root/html"
+printf '{"status":"unexpected"}\n' >"$classification_root/json"
+printf 'upstream unavailable\n' >"$classification_root/text"
+: >"$classification_root/empty"
+if (
+  jq() {
+    local response_path="${!#}"
+    grep -Eq '^\{.*\}$' "$response_path"
+  }
+  [[ "$(classify_safe_response "$classification_root/html")" == 'html' \
+    && "$(classify_safe_response "$classification_root/json")" == 'json-unexpected' \
+    && "$(classify_safe_response "$classification_root/text")" == 'non-json' \
+    && "$(classify_safe_response "$classification_root/empty")" == 'empty' ]]
+); then
+  pass safe-response-classification
+else
+  fail_test safe-response-classification
 fi
 
 if python3 "$repository_root/tests/test_frontend_nginx_patch.py" "$helper" >/dev/null; then
