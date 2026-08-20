@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - codex/tournament-catalog-hardening-deploy
-      - 'codex/tournament-planner-*'
+      - codex/tournament-planner-deploy-v1
   pull_request:
     paths:
       - '.github/workflows/bootstrap-quality.yml'
