@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - codex/tournament-catalog-hardening-deploy
+      - 'codex/tournament-planner-*'
   pull_request:
     paths:
       - '.github/workflows/bootstrap-quality.yml'
@@ -25,10 +26,14 @@ jobs:
       - name: Install validation tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq python3 shellcheck unzip zip
       - name: Shellcheck
-        run: shellcheck deploy.sh runtime-only-deploy.sh frontend-deploy.sh tests/deploy-run.sh tests/runtime-only-run.sh tests/frontend-deploy-run.sh
-      - name: Runtime-only contracts and failure fixtures
+        run: shellcheck deploy.sh runtime-only-deploy.sh frontend-deploy.sh planner-phase-a-deploy.sh tests/deploy-run.sh tests/runtime-only-run.sh tests/frontend-deploy-run.sh tests/planner-phase-a-run.sh
+      - name: Planner Phase A paused and backup contracts
+        run: bash tests/planner-phase-a-run.sh
+      - name: Runtime-only rollback compatibility fixtures
         run: bash tests/runtime-only-run.sh
       - name: Frontend manifest and archive safety
         run: bash tests/frontend-deploy-run.sh
       - name: Immutable wrapper pins, order and rollback simulations
         run: bash tests/deploy-run.sh
+
+
