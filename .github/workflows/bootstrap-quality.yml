@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: bootstrap-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   immutable-runtime-line:
     runs-on: ubuntu-latest
@@ -35,5 +39,4 @@ jobs:
         run: bash tests/frontend-deploy-run.sh
       - name: Immutable wrapper pins, order and rollback simulations
         run: bash tests/deploy-run.sh
-
 
