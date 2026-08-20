@@ -1,15 +1,19 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "service": "pokerops-tournament-catalog-ui",
   "sourceRepository": "yovoweqif674-cyber/po",
-  "sourceBranch": "codex/tournament-catalog-hardening-v1",
-  "sourceCommit": "5ac17f1bfd0f635c2eeab9438bc5ac048164247b",
-  "mode": "read-only-preview",
+  "sourceBranch": "codex/tournament-planner-mode-v1",
+  "sourceCommit": "f2b7d46b49da90c0e964ef9b0e65df1900a533e1",
+  "mode": "planner-maintenance-ready",
+  "profile": "planner",
+  "plannerMode": "maintenance",
+  "schedulerEnabled": false,
+  "jobWorkerEnabled": false,
   "route": "/preview/v4/manager/tournaments",
   "apiBase": "/tournament-ingestion-api",
   "archive": "pokerops-tournament-ui.zip",
-  "archiveSha256": "6f9bbfcb8116f98c892bec29be988c21cbd9e4d7f48fbf357b6f90e439c4ba96",
-  "indexJs": "assets/index-DgdmSeIh.js",
+  "archiveSha256": "f4152b0823c86c99fb68d38d2e6bd38436bba3f1f6bfc5c01e28526c8ccc737e",
+  "indexJs": "assets/index-BoDsFUEu.js",
   "indexCss": "assets/index-B5yM79TK.css",
-  "generatedAt": "2026-08-19T19:05:48Z"
+  "generatedAt": "2026-08-20T12:20:00Z"
 }
