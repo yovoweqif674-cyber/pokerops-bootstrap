@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/deploy.sh"
 
 bash -n "$SCRIPT"
+shellcheck "$ROOT/planner-phase-a-deploy.sh" "$ROOT/tests/planner-phase-a-run.sh"
+bash "$ROOT/tests/planner-phase-a-run.sh"
 grep -Fq "HELPER_COMMIT='0117d6102efc5abbfed053881eb4bb5ab99eff34'" "$SCRIPT"
 grep -Fq "APPLICATION_COMMIT='f2b7d46b49da90c0e964ef9b0e65df1900a533e1'" "$SCRIPT"
 grep -Fq "PHASE_A_HELPER_SHA256='d0931cac0526a2e687880e2f05ba238156f4e635bb979f06e89c4d9cae22627e'" "$SCRIPT"
