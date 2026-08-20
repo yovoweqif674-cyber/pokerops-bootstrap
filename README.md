@@ -1,80 +1,46 @@
-# PokerOps Tournament Ingestion bootstrap
+# PokerOps Tournament Planner bootstrap
 
-## One-command production deployment
+This branch is the paused Phase A handoff for Tournament Planner Mode. It does
+not activate live tournament monitoring, a canary, frontend publication, or
+retention cleanup.
 
-`deploy.sh` downloads byte-exact runtime and frontend helpers pinned to one
-immutable bootstrap commit, verifies both SHA-256 fingerprints, deploys the
-fixed application Release, and then publishes the matching Tournament Catalog
-frontend. The wrapper accepts no arguments and contains no secrets.
+## Phase A safety boundary
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/yovoweqif674-cyber/pokerops-bootstrap/FULL_WRAPPER_COMMIT/deploy.sh | sudo bash
-```
+The pinned wrapper downloads one byte-exact `planner-phase-a-deploy.sh`, checks
+its SHA-256, and passes the immutable application commit. Before any migration,
+the helper requires:
 
-## Tournament catalog frontend
+- explicit `TOURNAMENT_INGESTION_PROFILE=planner`;
+- `PLANNER_MODE=maintenance`;
+- `INFO_FETCH_MODE=selected_only`;
+- `ENABLE_SCHEDULER=false` and `ENABLE_JOB_WORKER=false`;
+- a root-owned PostgreSQL service definition and the explicit
+  `POKEROPS_PLANNER_PHASE_A_APPROVED=YES` operator gate.
 
-`frontend-deploy.sh` publishes the read-only Tournament Catalog preview at
-`https://forprofit.pro/preview/v4/manager/tournaments`. The helper downloads an
-immutable frontend ZIP from the pinned payload commit, verifies its manifest and
-SHA-256, backs up `/var/www/pokerops` and the active Nginx site, installs a
-same-origin read-only proxy to the worker on `127.0.0.1:8787`, and performs a
-public smoke test. Internal/write endpoints are blocked at Nginx. Any failure
-after activation automatically restores both the frontend and Nginx backup.
+The helper builds the exact source, stops every existing tournament worker,
+creates and verifies a full custom-format PostgreSQL backup, applies only the
+two forward Planner migrations, runs DB-only `--reconcile-only`, and starts
+the API in maintenance mode. Success requires paused scheduler/job-worker
+health, no expired or unclassified leases, and storage below the degraded
+threshold. The report records `roomRequestsEnabled=false`,
+`cleanupApplied=false`, and `canaryActivated=false`.
 
-Run the helper from a raw URL pinned to the full helper commit supplied in the
-deployment handoff:
+No production execution is performed by publishing this repository. Phase B
+cleanup and Phase C canary require separate approvals and are intentionally not
+implemented by the Phase A wrapper.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/yovoweqif674-cyber/pokerops-bootstrap/FULL_HELPER_COMMIT/frontend-deploy.sh | sudo bash
-```
+## Immutable frontend payload
 
-The public ZIP contains only browser assets that are served by the production
-site. It contains no runtime env, database URL, worker token, room credential,
-or migration credential.
+The repository also contains the Planner UI payload for later activation. Phase
+A does not publish it.
 
-## Runtime-only break-glass deployment
+- source: `yovoweqif674-cyber/po@f2b7d46b49da90c0e964ef9b0e65df1900a533e1`
+- archive SHA-256: `f4152b0823c86c99fb68d38d2e6bd38436bba3f1f6bfc5c01e28526c8ccc737e`
+- entry JS: `assets/index-BoDsFUEu.js`
+- entry CSS: `assets/index-B5yM79TK.css`
+- route: `/preview/v4/manager/tournaments`
 
-`runtime-only-deploy.sh` deploys one exact application commit using the existing
-restricted worker runtime configuration already installed on the VPS. It never
-requests an administrative database URL, does not run migrations, and does not
-execute SQL or DDL. The script verifies the private GitHub commit, builds the
-exact Docker image, stops the previous permanent scheduler, runs exactly one
-isolated `--once` catalog/info/state live smoke, and only then starts the
-permanent worker. It requires fresh scheduler, job-worker, and catalog
-heartbeats, completed startup reconciliation, zero stuck runs, expired leases,
-and unclassified failures, sanitized catalog/detail/timeline contracts, scoped
-facets, restart and queue recovery, and an unchanged `/var/www/pokerops` before
-activation. Known terminal failures are reported explicitly and are the only
-permitted degraded operational state.
+The Nginx helper remains read-only for the ingestion API; authenticated Planner
+commands go directly through Supabase RPC and never through the worker token.
 
-If the shared runtime env is missing, the helper generates a one-time age key,
-dispatches the runtime-only sealed-config workflow from `deployment-control`,
-and atomically installs the verified decrypted file as `root:root` mode `0600`.
-The ephemeral key and downloaded artifact are removed before deployment.
 
-Run it as root with a full 40-character commit SHA. Use a raw URL pinned to the
-exact bootstrap commit supplied with the deployment handoff.
-
-This public repository contains the secret-free bootstrap entrypoint for PokerOps Tournament Ingestion.
-It installs missing Ubuntu/Debian dependencies, authenticates the root GitHub CLI session when needed,
-requests a short-lived age-encrypted configuration artifact, verifies an immutable application Release,
-deploys one Docker worker, and runs independent post-deploy and rollback gates.
-
-Production configuration is never stored here or in application Release assets. GitHub Environment
-secrets are encrypted to a fresh age X25519 recipient generated on the VPS for each run.
-
-## Production command
-
-Always pin the raw wrapper URL to the full bootstrap commit. The wrapper itself
-pins the exact application Release, runtime helper, frontend helper, payload,
-and every SHA-256:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/yovoweqif674-cyber/pokerops-bootstrap/FULL_WRAPPER_COMMIT/deploy.sh | sudo bash
-```
-
-The legacy `tournament-ingestion.sh` remains available only through the
-preserved `deploy-v3` rollback line. The new runtime-only path neither accepts
-nor requests a migration URL and never executes `migrate.mjs`, SQL, or DDL.
-
-No VPS deployment is performed by publishing or testing this repository.
