@@ -2,13 +2,13 @@
 set -Eeuo pipefail
 
 readonly BOOTSTRAP_REPOSITORY='yovoweqif674-cyber/pokerops-bootstrap'
-readonly PAYLOAD_COMMIT='643516471bb531d21e6c82ad670373a9643a68f1'
+readonly PAYLOAD_COMMIT='e1367e09e7cb1464f910a046a738300496fe0749'
 readonly SOURCE_REPOSITORY='yovoweqif674-cyber/po'
-readonly SOURCE_COMMIT='5ac17f1bfd0f635c2eeab9438bc5ac048164247b'
+readonly SOURCE_COMMIT='f2b7d46b49da90c0e964ef9b0e65df1900a533e1'
 readonly ARCHIVE_NAME='pokerops-tournament-ui.zip'
 readonly MANIFEST_NAME='pokerops-tournament-ui.manifest.json'
-readonly ARCHIVE_SHA256='6f9bbfcb8116f98c892bec29be988c21cbd9e4d7f48fbf357b6f90e439c4ba96'
-readonly INDEX_JS='assets/index-DgdmSeIh.js'
+readonly ARCHIVE_SHA256='f4152b0823c86c99fb68d38d2e6bd38436bba3f1f6bfc5c01e28526c8ccc737e'
+readonly INDEX_JS='assets/index-BoDsFUEu.js'
 readonly INDEX_CSS='assets/index-B5yM79TK.css'
 readonly RAW_ROOT="https://raw.githubusercontent.com/${BOOTSTRAP_REPOSITORY}/${PAYLOAD_COMMIT}"
 readonly ARCHIVE_URL="${RAW_ROOT}/${ARCHIVE_NAME}"
@@ -160,9 +160,13 @@ download_and_verify_payload() {
     --arg apiBase "$API_PREFIX" \
     --arg indexJs "$INDEX_JS" \
     --arg indexCss "$INDEX_CSS" \
-    '.schemaVersion == 1
+    '.schemaVersion == 2
       and .service == "pokerops-tournament-catalog-ui"
-      and .mode == "read-only-preview"
+      and .mode == "planner-maintenance-ready"
+      and .profile == "planner"
+      and .plannerMode == "maintenance"
+      and .schedulerEnabled == false
+      and .jobWorkerEnabled == false
       and .archive == $archive
       and .archiveSha256 == $sha
       and .sourceRepository == $sourceRepository
@@ -191,7 +195,7 @@ extract_root = pathlib.Path(os.environ['EXTRACT_ROOT_VALUE'])
 
 with zipfile.ZipFile(archive) as bundle:
     infos = bundle.infolist()
-    if len(infos) != 66:
+    if len(infos) != 64:
         raise SystemExit('unexpected archive entry count')
 
     seen = set()
@@ -601,7 +605,7 @@ write_report() {
     --argjson terminalJobs "$(jq '.data.queue.terminal' "$operational_path")" \
     --argjson unclassifiedJobs "$(jq '.data.queue.unclassified' "$operational_path")" \
     '{schemaVersion: 1, service: "pokerops-tournament-catalog-ui", deployedAt: $deployedAt,
-      siteUrl: $siteUrl, mode: "read-only-preview", sourceRepository: $sourceRepository,
+      siteUrl: $siteUrl, mode: "planner-maintenance-ready", sourceRepository: $sourceRepository,
       sourceCommit: $sourceCommit, payloadCommit: $payloadCommit, archiveSha256: $archiveSha256,
       indexJs: $indexJs, indexCss: $indexCss, health: "ok", readiness: "ready",
       uniqueCount: $uniqueCount, scheduledCount: $scheduledCount, sngCount: $sngCount,
@@ -681,3 +685,5 @@ main() {
 if [[ "${POKEROPS_FRONTEND_DEPLOY_LIBRARY_ONLY:-0}" != '1' ]]; then
   main "$@"
 fi
+
+
