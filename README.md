@@ -44,3 +44,5 @@ The Nginx helper remains read-only for the ingestion API; authenticated Planner
 commands go directly through Supabase RPC and never through the worker token.
 
 
+
+Bootstrap CI validates ShellCheck, failure propagation, immutable checksums, archive safety, and the paused Phase A ordering contract.
